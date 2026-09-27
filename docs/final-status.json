@@ -1,0 +1,29 @@
+{
+  "state": {
+    "connected": true,
+    "usb": true,
+    "gain": 51,
+    "headphones": -14.5,
+    "balance": 117,
+    "strength": 25,
+    "clipguard": true,
+    "lowImpedance": false,
+    "mute": false,
+    "phantom": true,
+    "lowCut": true,
+    "expander": true,
+    "voiceTune": true,
+    "compressor": false,
+    "stale": false
+  },
+  "stale": false,
+  "workerRunning": true,
+  "opened": true,
+  "pending": {},
+  "sequence": 3,
+  "error": "",
+  "displayedGain": 51,
+  "page": "controls",
+  "focus": "panel",
+  "pendingCount": 0
+}

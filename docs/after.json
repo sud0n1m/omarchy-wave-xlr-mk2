@@ -1,0 +1,10 @@
+{
+  "duration_s": 20.00024698299967,
+  "worker_pid": 2384862,
+  "cpu_percent_one_core": 0.04999938255012581,
+  "voluntary_switches_per_s": 8.799891328822142,
+  "involuntary_switches_per_s": 0.0,
+  "rss_mib": 16.95703125,
+  "threads": 2,
+  "note": "Worker main-thread context switches include USB waits; not a count of machine-wide CPU wakeups. Coarse CPU tick accounting."
+}

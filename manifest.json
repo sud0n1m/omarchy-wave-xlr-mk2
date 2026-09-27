@@ -1,0 +1,20 @@
+{
+  "schemaVersion": 1,
+  "id": "sudonim.wave-xlr",
+  "name": "Wave XLR MK.2",
+  "version": "1.1.1",
+  "author": "Colin Nederkoorn",
+  "description": "Themed Wave XLR MK.2 hardware controls with responsive knob updates",
+  "kinds": [
+    "bar-widget"
+  ],
+  "entryPoints": {
+    "barWidget": "Panel.qml"
+  },
+  "barWidget": {
+    "displayName": "Wave XLR MK.2",
+    "category": "System",
+    "allowMultiple": false,
+    "defaultSection": "right"
+  }
+}
