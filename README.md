@@ -84,7 +84,7 @@ Linux API. Register readback confirms state, not acoustic processing quality.
 
 Runtime dependencies: libusb, systemd/libudev, ALSA tools, PipeWire/WirePlumber, and the Omarchy
 Quickshell shell. Build dependencies: Rust/Cargo, a C compiler, and pkg-config.
-Python is used only by optional development tests, never by the running plugin.
+Python is not required for installation, runtime, or tests.
 
 Install source, compile the worker once, then enable the plugin:
 
@@ -161,8 +161,8 @@ hardware settings and any explicitly selected PipeWire defaults unchanged.
 ```bash
 cargo test --locked
 cargo clippy --locked --all-targets -- -D warnings
-python3 tests/test_panel_efficiency.py  # Node.js required for this test only
-python3 tests/test_panel_slider.py      # Omarchy/Quickshell + QtTest required
+# Optional UI integration tests: Node.js + Omarchy/Quickshell + QtTest required
+cargo test --locked --test panel -- --ignored --nocapture
 ```
 
 The Rust tests use fake devices and clocks for protocol preservation, bounds,
@@ -170,8 +170,13 @@ readback, reconnects, ALSA fallback, stale-state handling, and deadlines. Framin
 and subprocess tests cover oversized/invalid input, timeout cleanup, and output
 larger than a pipe buffer. These tests never write to real hardware.
 
-The original Python implementation and its tests remain under `tests/reference/`
-for comparison; the production panel does not execute them. Historical Python
+The optional UI tests are run by Rust and exercise JavaScript functions and slider
+components extracted from the actual `Panel.qml`. The slider tests use an isolated
+offscreen shell and never start the device worker. These two tests are explicitly
+ignored by default so the worker suite can run without desktop dependencies.
+
+The original Python implementation and its tests are available in Git history.
+The current source and test runners contain no Python. Historical Python
 measurements are in [the efficiency review](docs/efficiency.md). See
 [the Rust migration report](docs/rust-migration.md) for current verification and
 measurement limits. [Event-only idle verification](docs/event-only-idle.md) covers

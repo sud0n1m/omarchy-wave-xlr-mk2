@@ -1,16 +1,15 @@
-"""Exercise actual panel functions in Node's JS VM; no shell or USB access."""
-from pathlib import Path
-import json
-import subprocess
+// Exercise functions extracted from the actual panel; no shell or USB access.
+const {readFileSync} = require('node:fs');
+const {join} = require('node:path');
+const source = readFileSync(join(__dirname, '..', '..', 'Panel.qml'), 'utf8');
+const names = ['copy', 'send', 'edit', 'armWatchdog', 'syncWatchdog', 'acceptState', 'receive'];
+const functions = names.map(name => {
+    const start = source.indexOf('    function ' + name + '(');
+    const end = source.indexOf('\n    function ', start + 1);
+    if (start < 0 || end < 0) throw new Error('Cannot extract panel function: ' + name);
+    return source.slice(start, end);
+}).join('\n');
 
-source = (Path(__file__).resolve().parents[1] / 'Panel.qml').read_text()
-def function(name):
-    start = source.index('    function ' + name + '(')
-    end = source.index('\n    function ', start + 1)
-    return source[start:end]
-
-functions = '\n'.join(function(name) for name in ['copy', 'send', 'edit', 'armWatchdog', 'syncWatchdog', 'acceptState', 'receive'])
-script = """
 const vm = require('node:vm');
 const assert = require('node:assert/strict');
 const ctx = {Date, Number, opened:false, state:{connected:true,usb:true,stale:false,gain:43},
@@ -24,7 +23,7 @@ ctx.worker={running:true,write:line=>ctx.writes.push(JSON.parse(line))};
 ctx.root=ctx;
 ctx.value=key=>ctx.desired[key] ?? ctx.state[key];
 vm.createContext(ctx);
-""" + 'vm.runInContext(' + json.dumps(functions) + ',ctx);\n' + """
+vm.runInContext(functions,ctx);
 ctx.edit('gain',43,false);
 assert.equal(ctx.flushCount,0);
 assert.deepEqual(ctx.queued,{});
@@ -65,5 +64,3 @@ assert.ok(ctx.watchdog.interval>=12000,'explicit defaults command retains longer
 ctx.receive(JSON.stringify({type:'result',id:defaults,ok:true,state:ctx.state}));
 assert.equal(ctx.watchdog.interval,3100);
 console.log('PASS state identity, edit coalescing, event-only absence, request timeouts and wake watchdog');
-"""
-subprocess.run(['node', '-e', script], check=True)

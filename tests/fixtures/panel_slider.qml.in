@@ -1,0 +1,41 @@
+import Quickshell
+import QtQuick
+import QtTest
+import qs.Ui
+import qs.Commons
+FloatingWindow {
+ id: root; visible:true; implicitWidth: 500; implicitHeight: 200
+ property color fg: Color.foreground
+ property string family: Style.font.family
+ property var bar: null
+ property var state: ({headphones:-20})
+ property var highlights: ({})
+ property bool opened: true
+ property bool available: true
+ property string focusedControl: ""
+ property int edits: 0
+ property var calls: []
+ function value(k) { return state[k] }
+ function supported(k) { return available }
+ function ensureVisible(i) {}
+ function setDragging(k,d) {}
+ function edit(k,v,final) { edits++; calls.push({value:v,final:final}); var n={}; n[k]=v; state=n }
+
+@@COMPONENTS@@
+ SliderField { id: field; width: 400; controlKey: "headphones"; minimum: -60; maximum: 0; increment: .25 }
+ TestCase {
+  name: "WaveActualSliderField"; when: true
+  function initTestCase() { console.log("WAVE TESTS START") }
+  function cleanupTestCase() { console.log("WAVE TESTS COMPLETE", qtest_results.passCount, qtest_results.failCount) }
+  function cleanup() { console.log("WAVE CASE", qtest_results.functionName, "edits",root.edits,"value",root.state.headphones,"failures", qtest_results.failCount) }
+  function slider() { return findChild(field, "headphones") }
+  function init() { root.state = ({headphones:-20}); root.edits=0; root.calls=[]; root.available=true; root.opened=true; wait(20) }
+  function test_wheelSingleDelivery() { var item=slider(); verify(item); mouseWheel(item,item.width/2,item.height/2,0,120); compare(root.state.headphones,-19); compare(root.edits,1) }
+  function test_shiftWheelSingleDelivery() { var item=slider(); mouseWheel(item,item.width/2,item.height/2,0,-120,Qt.NoButton,Qt.ShiftModifier); compare(root.state.headphones,-20.25); compare(root.edits,1) }
+  function test_disabledWheel() { root.available=false; var item=slider(); mouseWheel(item,item.width/2,item.height/2,0,120); compare(root.state.headphones,-20); compare(root.edits,0) }
+  function test_dragQuarterSnapFinal() { var item=slider(); mousePress(item,101,item.height/2); mouseMove(item,213,item.height/2,20); mouseRelease(item,213,item.height/2); compare(root.state.headphones*4,Math.round(root.state.headphones*4)); verify(root.calls.length>=2); verify(root.calls[root.calls.length-1].final); compare(item.dragging,false) }
+  function test_dragReadNoYank() { var item=slider(); mousePress(item,101,item.height/2); var local=item.liveValue; root.state=({headphones:-5}); wait(20); compare(item.liveValue,local); mouseRelease(item,101,item.height/2); compare(root.state.headphones,field.snap(local)); verify(root.calls[root.calls.length-1].final) }
+  function test_externalReadNoWrite() { root.state=({headphones:-23.5}); wait(30); compare(slider().value,-23.5); compare(root.edits,0) }
+  function test_closeCancelsDrag() { var item=slider(); mousePress(item,101,item.height/2); verify(item.dragging); root.opened=false; compare(item.dragging,false); mouseRelease(item,101,item.height/2) }
+ }
+}

@@ -23,8 +23,8 @@ and their child processes are killed/reaped on timeout.
 Compared with the previous implementation, an explicitly observed missing ALSA
 card immediately marks state stale instead of waiting for the next USB retry.
 Missing hardware, permission denied and a busy vendor interface are distinguished.
-The original Python source/tests are retained under `tests/reference` for reference,
-not executed by the panel.
+The original Python source/tests are available in Git history. The current checkout
+uses Rust test runners, with JavaScript/QML fixtures to exercise the actual panel.
 
 ## Measured impact
 
