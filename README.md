@@ -119,16 +119,26 @@ omarchy restart shell
 
 Basic gain, mute and headphone controls can use ALSA without vendor USB access.
 For onboard DSP and the full control panel, use the ownership-checking setup
-command after building the worker. These are explicit administrator actions;
-the plugin never runs them automatically:
+command after building the worker. Run these commands in a terminal; setup
+requests administrator authorization explicitly, never from the background worker:
 
 ```bash
-sudo ~/.config/omarchy/plugins/sudonim.wave-xlr/libexec/wave-xlr-control --install-udev-rule
+~/.config/omarchy/plugins/sudonim.wave-xlr/libexec/wave-xlr-control --install-udev-rule
 sudo udevadm control --reload-rules
 ```
 
 Reconnect the Mk.2. The rule grants the active local user access only to this
-product. The helper creates `70-sudonim-wave-xlr-mk2.rules` under
+product. Do **not** prefix the worker command with `sudo`. The unprivileged helper
+hashes its running executable through `/proc/<pid>/exe` before the password
+prompt. It invokes only the system `sudo` and `bash` at the privilege boundary,
+with a literal bootstrap supplied before authentication. System tools copy the
+running executable to a private root-owned directory, verify its SHA-256 against
+the pre-prompt digest, then execute that verified copy. A changed copy is rejected;
+the user-writable checkout is never executed directly as root. The private copy
+is removed on exit. This uses the system Bash, coreutils and sudo already present
+on Omarchy.
+
+The helper creates `70-sudonim-wave-xlr-mk2.rules` under
 `/etc/udev/rules.d/` using an atomic operation that cannot overwrite an existing
 path. A root-only `.sudonim-wave-xlr-mk2/` directory beside it records ownership
 with a hard link to the installed inode. Repeated setup accepts only that exact
@@ -163,7 +173,7 @@ If you installed this version's USB rule and no other Wave XLR MK.2 tool needs
 it, remove it **before** removing the plugin (the native helper is needed):
 
 ```bash
-sudo ~/.config/omarchy/plugins/sudonim.wave-xlr/libexec/wave-xlr-control --remove-udev-rule
+~/.config/omarchy/plugins/sudonim.wave-xlr/libexec/wave-xlr-control --remove-udev-rule
 sudo udevadm control --reload-rules
 ```
 
@@ -193,9 +203,12 @@ The Rust tests use fake devices and clocks for protocol preservation, bounds,
 readback, reconnects, ALSA fallback, stale-state handling, and deadlines. Framing
 and subprocess tests cover oversized/invalid input, timeout cleanup, and output
 larger than a pipe buffer. These tests never write to real hardware.
-Eight setup tests cover ownership, collisions (including identical files),
+Nine setup tests cover ownership, collisions (including identical files),
 modified/replaced rules, symlinks, permissions, concurrent setup and interrupted
 installation, using isolated temporary directories without administrator access.
+The staging test replaces an executable's checkout pathname after hashing and
+verifies that the pinned running image is still used, rejects a wrong digest,
+and checks private-copy cleanup. It runs a harmless fixture without sudo.
 
 The optional UI tests are run by Rust and exercise JavaScript functions and slider
 components extracted from the actual `Panel.qml`. The slider tests use an isolated

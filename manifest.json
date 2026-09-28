@@ -2,7 +2,7 @@
   "schemaVersion": 1,
   "id": "sudonim.wave-xlr",
   "name": "Elgato Wave XLR MK.2",
-  "version": "1.2.2",
+  "version": "1.2.3",
   "author": "Colin Nederkoorn",
   "description": "Elgato Wave XLR MK.2 (MK2) USB audio interface controls: microphone gain, mute, headphones, monitor mix and onboard DSP in a themed Omarchy bar panel.",
   "kinds": [

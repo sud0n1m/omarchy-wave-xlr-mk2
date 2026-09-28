@@ -6,15 +6,64 @@ use std::io::{self, Read, Write};
 use std::os::fd::AsRawFd;
 use std::os::unix::fs::{DirBuilderExt, MetadataExt, OpenOptionsExt};
 use std::path::{Path, PathBuf};
+use std::process::Command;
 
 const RULE: &[u8] = include_bytes!("../udev/70-sudonim-wave-xlr-mk2.rules");
 const RULE_NAME: &str = "70-sudonim-wave-xlr-mk2.rules";
 const STATE_DIR: &str = ".sudonim-wave-xlr-mk2";
+const BOOTSTRAP: &str = include_str!("udev_setup_bootstrap.sh");
+
+fn executable_digest(executable: &str) -> Result<String, String> {
+    let output = Command::new("/usr/bin/sha256sum")
+        .args(["--", executable])
+        .output()
+        .map_err(|error| error.to_string())?;
+    if !output.status.success() {
+        return Err("Cannot hash the running setup executable".into());
+    }
+    let text = String::from_utf8(output.stdout).map_err(|error| error.to_string())?;
+    let digest = text.split_whitespace().next().unwrap_or("");
+    if digest.len() != 64 || !digest.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+        return Err("Invalid executable digest".into());
+    }
+    Ok(digest.into())
+}
+
+fn elevate(action: &str) -> Result<(), String> {
+    // Pin the running ELF inode, not the replaceable checkout pathname. The
+    // parent remains alive while sudo waits; Linux denies writes to its running
+    // executable. Hash before authentication and verify the private root copy.
+    let executable = format!("/proc/{}/exe", std::process::id());
+    let digest = executable_digest(&executable)?;
+    let flag = format!("--{action}-udev-rule");
+    let status = Command::new("/usr/bin/sudo")
+        .args([
+            "--",
+            "/usr/bin/bash",
+            "--noprofile",
+            "--norc",
+            "-p",
+            "-c",
+            BOOTSTRAP,
+            "wave-xlr-udev-setup",
+            &executable,
+            &digest,
+            &flag,
+        ])
+        .status()
+        .map_err(|error| error.to_string())?;
+    if !status.success() {
+        return Err(
+            "Verified USB setup failed or administrator authorization was cancelled".into(),
+        );
+    }
+    Ok(())
+}
 
 pub fn run(action: &str) -> Result<(), String> {
     // SAFETY: geteuid has no arguments or side effects.
     if unsafe { libc::geteuid() } != 0 {
-        return Err("USB rule setup requires an explicit sudo invocation".into());
+        return elevate(action);
     }
     let result =
         manage(Path::new("/etc/udev/rules.d"), action).map_err(|error| error.to_string())?;
@@ -88,7 +137,18 @@ fn matching_receipt(target: &Path, receipt: &Path) -> io::Result<()> {
     Ok(())
 }
 
-fn lock(state: &Path) -> io::Result<File> {
+struct SetupLock(File);
+
+impl Drop for SetupLock {
+    fn drop(&mut self) {
+        // Release explicitly: a concurrent fork can briefly inherit this file
+        // description before CLOEXEC closes it, extending a close-only lock.
+        // SAFETY: the owned descriptor remains valid until this guard is dropped.
+        unsafe { libc::flock(self.0.as_raw_fd(), libc::LOCK_UN) };
+    }
+}
+
+fn lock(state: &Path) -> io::Result<SetupLock> {
     let file = OpenOptions::new()
         .create(true)
         .read(true)
@@ -105,7 +165,7 @@ fn lock(state: &Path) -> io::Result<File> {
     if unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) } != 0 {
         return Err(refused("another setup operation holds the lock"));
     }
-    Ok(file)
+    Ok(SetupLock(file))
 }
 
 fn manage(base: &Path, action: &str) -> io::Result<&'static str> {

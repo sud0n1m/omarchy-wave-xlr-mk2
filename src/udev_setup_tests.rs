@@ -154,3 +154,62 @@ fn serializes_setup_without_probing_hardware() {
     assert!(dir.run("remove").is_err());
     assert_eq!(fs::read(dir.target()).unwrap(), RULE);
 }
+
+#[test]
+fn bootstrap_rejects_tampering_and_pins_running_image_across_path_replacement() {
+    struct ChildGuard(std::process::Child);
+    impl Drop for ChildGuard {
+        fn drop(&mut self) {
+            let _ = self.0.kill();
+            let _ = self.0.wait();
+        }
+    }
+    let dir = Sandbox::new();
+    let executable = dir.0.join("worker");
+    fs::copy("/usr/bin/sleep", &executable).unwrap();
+    let child = ChildGuard(Command::new(&executable).arg("30").spawn().unwrap());
+    let pinned = format!("/proc/{}/exe", child.0.id());
+    let digest = executable_digest(&pinned).unwrap();
+    // Model replacement of the user-writable checkout while authentication waits.
+    fs::rename(&executable, dir.0.join("original")).unwrap();
+    fs::copy("/usr/bin/false", &executable).unwrap();
+    assert_eq!(executable_digest(&pinned).unwrap(), digest);
+    assert_ne!(
+        executable_digest(executable.to_str().unwrap()).unwrap(),
+        digest
+    );
+
+    let invoke = |hash: &str| {
+        Command::new("/usr/bin/bash")
+            .args([
+                "--noprofile",
+                "--norc",
+                "-p",
+                "-c",
+                BOOTSTRAP,
+                "test",
+                &pinned,
+                hash,
+                "--install-udev-rule",
+            ])
+            .output()
+            .unwrap()
+    };
+    let tampered = invoke(&"0".repeat(64));
+    assert!(!tampered.status.success());
+    assert!(String::from_utf8_lossy(&tampered.stderr).contains("refusing privileged execution"));
+    let original = invoke(&digest);
+    // sleep rejects the setup flag: reaching its error proves that the private
+    // copy of the original image ran, rather than the replacement `false` binary.
+    let stderr = String::from_utf8_lossy(&original.stderr);
+    assert!(
+        stderr.contains("unrecognized option '--install-udev-rule'"),
+        "{stderr}"
+    );
+    let private_executable = stderr.lines().next().unwrap().split(':').next().unwrap();
+    assert!(private_executable.starts_with("/tmp/omarchy-wave-xlr-setup."));
+    assert!(
+        !Path::new(private_executable).exists(),
+        "private copy must be cleaned up"
+    );
+}
