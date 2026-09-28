@@ -1,0 +1,17 @@
+[package]
+name = "wave-xlr-control"
+version = "1.2.0"
+edition = "2024"
+license = "MIT"
+publish = false
+
+[dependencies]
+libc = "0.2"
+rusb = "0.9.4"
+udev = "0.9.3"
+serde_json = "1"
+
+[profile.release]
+lto = true
+codegen-units = 1
+strip = true

@@ -1,0 +1,12 @@
+#!/usr/bin/env bash
+set -euo pipefail
+plugin_dir=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
+build_dir="${XDG_CACHE_HOME:-$HOME/.cache}/omarchy-wave-xlr-mk2/build"
+cargo build --locked --release --manifest-path "$plugin_dir/Cargo.toml" --target-dir "$build_dir"
+mkdir -p "$plugin_dir/libexec"
+# Replace atomically so a running worker can finish using its previous executable.
+staging=$(mktemp "$plugin_dir/libexec/.wave-xlr-control.XXXXXX")
+trap 'rm -f -- "$staging"' EXIT
+install -m 0755 "$build_dir/release/wave-xlr-control" "$staging"
+mv -f -- "$staging" "$plugin_dir/libexec/wave-xlr-control"
+printf 'Built %s/libexec/wave-xlr-control\n' "$plugin_dir"

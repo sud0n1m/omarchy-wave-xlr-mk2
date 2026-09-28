@@ -9,6 +9,8 @@ Built with native Omarchy controls: prominent gain, monitoring, aligned onboard-
 switches, and a separate hardware-settings page. Some native details (square
 switches, borders, sizing) intentionally follow the shell rather than the mockup.
 
+![Wave XLR MK.2 controls inheriting the Omarchy theme](preview.png)
+
 ## Controls
 
 - Actual preamp gain 0–80 dB, hardware capture mute, headphone attenuation
@@ -26,7 +28,7 @@ switches, borders, sizing) intentionally follow the shell rather than the mockup
 
 ## Responsive device state
 
-A single persistent Python worker owns the vendor USB interface. The panel uses
+A single persistent Rust worker owns the vendor USB interface. The panel uses
 newline-delimited JSON on stdin/stdout, rather than spawning a process per poll.
 It reads every 50 ms while open and 500 ms while closed, sending changed state
 plus a liveness frame at least once per second in normal operation. Incoming
@@ -43,11 +45,16 @@ Only one worker can own the lock; the standalone CLI fails fast while it runs.
 The current deployment is a single-monitor bar; multi-instance ownership is not
 implemented and must be addressed before enabling duplicate bar instances.
 
-Background efficiency (v1.1.1): the worker blocks on stdin until the next
+Background efficiency (v1.2.0): the worker blocks on stdin until the next
 500 ms device check or 1-second heartbeat; there is no extra 100 ms wake loop.
 The UI uses one-shot watchdog/highlight timers, ignores identical state for
 control bindings, and suppresses writes when the snapped value has not changed.
-Missing devices use reconnect backoff; library discovery is cached. Permission-only
+When physically disconnected, a compact panel replaces the controls. One initial
+sysfs inventory and passive udev notifications track attachment; there are no USB
+open attempts, control reads, ALSA subprocesses, or periodic inventory scans while
+absent. A one-second IPC heartbeat keeps the shell watchdog informed. Controls
+return after attachment; reconnect backoff applies only while hardware is present
+but unavailable. libusb is linked directly. Permission-only
 ALSA fallback reads all basic controls with one process, every 2 seconds while
 closed or 500 ms while open. The normal USB path starts no polling subprocesses.
 
@@ -57,38 +64,68 @@ Read-only diagnostics while the bar is running:
 omarchy-shell sudonim.wave-xlr-status status
 ```
 
-The standalone `python3 control.py` still works with the plugin disabled and no
+The standalone `libexec/wave-xlr-control` still works with the plugin disabled and no
 worker holding the lock. Do not run another vendor-control app concurrently.
 
 ## Protocol and safety
 
 Mapping reference: [OpenXLR WaveXlrMk2Device.cs](https://github.com/emaspa/openxlr/blob/main/src/OpenXLR.Core/Devices/WaveXlrMk2Device.cs).
 Vendor/product 0fd9:00b6, interface 3, bank 0x0203, blocks 1/4/5 (6/38/2 bytes).
-The ctypes/libusb worker claims only the vendor interface and never detaches the
+The Rust/libusb worker claims only the vendor interface and never detaches the
 audio driver. Writes read the current block, modify only the chosen field,
 preserve unknown bytes, and confirm the selected value by readback. Unexpected
 lengths/ranges fail closed. These are community protocol mappings, not an Elgato
 Linux API. Register readback confirms state, not acoustic processing quality.
 
-## Restore
+## Installation
 
-Dependencies: Python 3, libusb, ALSA tools, PipeWire and the Omarchy shell.
-From the repository root:
+Runtime dependencies: libusb, systemd/libudev, ALSA tools, PipeWire/WirePlumber, and the Omarchy
+Quickshell shell. Build dependencies: Rust/Cargo, a C compiler, and pkg-config.
+Python is used only by optional development tests, never by the running plugin.
+
+Install source, compile the worker once, then enable the plugin:
 
 ```bash
-mkdir -p ~/.config/omarchy/plugins/sudonim.wave-xlr
-cp Panel.qml control.py manifest.json ~/.config/omarchy/plugins/sudonim.wave-xlr/
-sudo install -m 0644 udev/70-wave-xlr-mk2.rules /etc/udev/rules.d/
+omarchy pkg add rust base-devel pkgconf libusb alsa-utils
+omarchy plugin add https://github.com/sud0n1m/omarchy-wave-xlr-mk2
+~/.config/omarchy/plugins/sudonim.wave-xlr/build-worker
+omarchy plugin enable sudonim.wave-xlr
+```
+
+`build-worker` runs `cargo build --release --locked` and installs a native worker
+in the plugin's `libexec/` directory. Build output is cached outside the plugin
+in `~/.cache/omarchy-wave-xlr-mk2/build` (respects `XDG_CACHE_HOME`). There is no
+runtime compilation, Python fallback, downloaded executable, or background cargo
+process. Cargo downloads the source dependencies recorded in `Cargo.lock` during
+the explicit build. No root privileges are needed to compile.
+
+After updating the source, rebuild and restart the shell:
+
+```bash
+omarchy plugin update sudonim.wave-xlr
+~/.config/omarchy/plugins/sudonim.wave-xlr/build-worker
+omarchy restart shell
+```
+
+### Manual USB setup
+
+Basic gain, mute and headphone controls can use ALSA without vendor USB access.
+For onboard DSP and the full control panel, install the included product-specific
+udev rule from the downloaded plugin directory:
+
+```bash
+sudo install -m 0644 ~/.config/omarchy/plugins/sudonim.wave-xlr/udev/70-wave-xlr-mk2.rules /etc/udev/rules.d/
 sudo udevadm control --reload-rules
 ```
 
-Reconnect the Mk.2, then enable the plugin below. The rule grants the active
-local user access only to this product. Tested with Omarchy's Quickshell-based
-shell; this is not a Waybar module.
+Reconnect the Mk.2. The rule grants the active local user access only to this
+product. Installation does not run privileged commands or install the rule
+automatically. Tested with Omarchy's Quickshell-based shell; this is not a Waybar
+module. The plugin claims only the vendor control interface; the kernel keeps the audio streaming interface.
 
-```
-omarchy plugin validate ~/.config/omarchy/plugins/sudonim.wave-xlr
-omarchy-shell shell rescanPlugins
+Optional placement and connection check:
+
+```bash
 omarchy bar put sudonim.wave-xlr --before omarchy.audio
 omarchy restart shell
 omarchy-shell sudonim.wave-xlr-status status
@@ -99,21 +136,46 @@ older version. Status should report `usb: true`, `stale: false`, one running
 worker, and no error. The worker is owned by the shell; no systemd unit is needed.
 Do not install the Mk.1 WirePlumber workaround for this Mk.2.
 
+## Removal
+
+```bash
+omarchy plugin remove sudonim.wave-xlr
+```
+
+If you installed the USB permission rule above and no other Wave XLR MK.2 tool
+needs it, remove that specific rule:
+
+```bash
+sudo rm /etc/udev/rules.d/70-wave-xlr-mk2.rules
+sudo udevadm control --reload-rules
+```
+
+Reconnect the device to apply the permission change. Removing the plugin leaves
+hardware settings and any explicitly selected PipeWire defaults unchanged.
+
 ## Verification
 
-Run `python3 -m unittest -v test_control test_watch` in the plugin directory.
-Run `python3 tests/test_panel_efficiency.py` (Node.js required for this test only)
-to check unchanged-state handling and final-edit flushing.
-Also run `python3 tests/test_panel_slider.py`: seven gesture cases load the actual
-SliderField in isolated offscreen Quickshell without touching USB. They verify
-single wheel delivery, fine steps, drag snapping, external updates and cancellation.
+```bash
+cargo test --locked
+cargo clippy --locked --all-targets -- -D warnings
+python3 tests/test_panel_efficiency.py  # Node.js required for this test only
+python3 tests/test_panel_slider.py      # Omarchy/Quickshell + QtTest required
+```
 
-20 backend tests cover protocol preservation/bounds, NDJSON parsing, locking, liveness,
-fallback/reconnect, idle scheduling, cached library discovery and failed-write behavior. Live keyboard checks verified
-43 → 42 → 43 dB gain and −20 → −20.25 → −20 dB headphones. Phantom Cancel and
-Escape preserve 48V and restore focus. Watchdog recovery was verified by freezing
-only the worker; it recovered in 4.9 seconds with one owner and unchanged settings.
+The Rust tests use fake devices and clocks for protocol preservation, bounds,
+readback, reconnects, ALSA fallback, stale-state handling, and deadlines. Framing
+and subprocess tests cover oversized/invalid input, timeout cleanup, and output
+larger than a pipe buffer. These tests never write to real hardware.
 
-External ALSA gain changes reached the worker in about 50.4 ms (8 samples).
-This is **not** measured physical-knob-to-screen latency. The latter and acoustic
-DSP quality remain unverified. See the [efficiency review](docs/efficiency.md) for recorded measurements.
+The original Python implementation and its tests remain under `tests/reference/`
+for comparison; the production panel does not execute them. Historical Python
+measurements are in [the efficiency review](docs/efficiency.md). See
+[the Rust migration report](docs/rust-migration.md) for current verification and
+measurement limits. Physical-knob-to-screen latency and acoustic DSP quality
+have not been measured.
+
+## License and acknowledgments
+
+[MIT](LICENSE). Thanks to [OpenXLR](https://github.com/emaspa/openxlr) for documenting
+the Wave XLR MK.2 USB protocol. This project implements those hardware mappings
+in its own control worker and does not bundle or execute OpenXLR.

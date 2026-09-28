@@ -1,4 +1,6 @@
-# Background efficiency review — 2026-09-27
+# Python v1.1.1 background efficiency review — 2026-09-27
+
+Historical results. The current implementation is described in [the Rust migration](rust-migration.md).
 
 Deployed plugin v1.1.1. The healthy USB path keeps one Python worker, sampling
 all three small device blocks every 500 ms closed / 50 ms open. Polling input

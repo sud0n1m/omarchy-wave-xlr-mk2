@@ -30,6 +30,7 @@ Panel {
     property var highlights: ({})
     readonly property color fg: Color.popups.text
     readonly property string family: Style.font.family
+    readonly property bool disconnected: state.present === false
     readonly property bool available: state.connected === true && !stale && worker.running
     implicitWidth: button.implicitWidth
     implicitHeight: button.implicitHeight
@@ -76,7 +77,7 @@ Panel {
     function acceptState(next) {
         lastSeen = Date.now(); stale = !!next.stale
         armWatchdog()
-        if (next.connected && !next.stale) transportError = ""
+        if ((next.connected && !next.stale) || next.present === false) transportError = ""
         var changed = false
         for (var key in next) if (next[key] !== state[key]) { changed = true; break }
         if (!changed) for (var oldKey in state) if (!(oldKey in next)) { changed = true; break }
@@ -90,7 +91,11 @@ Panel {
             }
             if (highlighted) { highlights = h; scheduleHighlights() }
         }
-        if (!next.connected || next.stale) {
+        if (next.present === false) {
+            state = next; stale = false; error = ""
+            desired = ({}); queued = ({}); pending = ({})
+            phantomArmed = false; page = "controls"; helpOpen = false
+        } else if (!next.connected || next.stale) {
             var retained = copy(state); for (var k in next) retained[k] = next[k]; state = retained
             stale = true; desired = ({}); queued = ({}); pending = ({})
         } else state = next
@@ -126,7 +131,7 @@ Panel {
     }
     Process {
         id: worker
-        command: ["python3", Qt.resolvedUrl("control.py").toString().replace("file://", ""), "--watch"]
+        command: [Qt.resolvedUrl("libexec/wave-xlr-control").toString().replace("file://", ""), "--watch"]
         stdinEnabled: true
         stdout: SplitParser { onRead: function(line) { root.receive(line) } }
         onStarted: { root.lastSeen = Date.now(); root.sequence = -1; root.armWatchdog(); root.send("poll", {intervalMs:root.opened ? 50 : 500}) }
@@ -318,7 +323,7 @@ Panel {
             }
         }
         opacity: root.available ? 1 : 0.55
-        tooltipText: root.available ? "Wave XLR MK.2 · " + root.state.gain + " dB" + (root.state.mute ? " · MUTED" : "") : "Wave XLR MK.2 · " + (root.transportError || root.error || "Stale · reconnecting")
+        tooltipText: root.available ? "Wave XLR MK.2 · " + root.state.gain + " dB" + (root.state.mute ? " · MUTED" : "") : "Wave XLR MK.2 · " + (root.transportError || root.error || (root.disconnected ? "Not connected" : "Reconnecting"))
         onPressed: root.toggle()
     }
     KeyboardPanel {
@@ -345,9 +350,9 @@ Panel {
                         Column {
                             width: parent.width - helpButton.width; spacing: Style.space(5)
                             Label { text: root.page === "controls" ? "Wave XLR MK.2" : "Hardware settings"; font.pixelSize: Style.font.heading; font.bold: true }
-                            Caption { text: root.stale ? "Stale · reconnecting" : root.state.usb ? "Connected · USB" : "Connected · basic audio"; color: root.stale ? Color.urgent : root.fg }
+                            Caption { text: root.disconnected ? "Not connected" : root.stale ? "Reconnecting" : root.state.usb ? "Connected · USB" : "Connected · basic audio"; color: root.disconnected ? root.fg : root.stale ? Color.urgent : root.fg }
                         }
-                        Action { id: helpButton; text: "?"; tooltipText: "Controls and keyboard help"; bordered: true; onClicked: root.helpOpen = !root.helpOpen }
+                        Action { id: helpButton; visible: !root.disconnected; text: "?"; tooltipText: "Controls and keyboard help"; bordered: true; onClicked: root.helpOpen = !root.helpOpen }
                     }
                     Caption {
                         width: parent.width; wrapMode: Text.WordWrap; visible: root.helpOpen
@@ -355,12 +360,16 @@ Panel {
                     }
                     Label {
                         width: parent.width; wrapMode: Text.WordWrap
-                        visible: root.error !== "" || root.transportError !== "" || root.stale
+                        visible: !root.disconnected && (root.error !== "" || root.transportError !== "" || root.stale)
                         text: root.error || root.transportError || "Last known settings · waiting for fresh device state"
                         color: Color.urgent; font.pixelSize: Style.font.caption
                     }
+                    Caption {
+                        width: parent.width; wrapMode: Text.WordWrap; visible: root.disconnected
+                        text: "Connect your Wave XLR or dock your laptop. Controls will appear automatically."
+                    }
                     Column {
-                        visible: root.page === "controls"; width: parent.width; spacing: Style.space(14)
+                        visible: root.available && root.page === "controls"; width: parent.width; spacing: Style.space(14)
                         Row {
                             width: parent.width
                             Caption { width: parent.width - muteButton.width; text: "MICROPHONE"; anchors.verticalCenter: parent.verticalCenter; font.letterSpacing: 1 }
@@ -390,7 +399,7 @@ Panel {
                         }
                     }
                     Column {
-                        visible: root.page === "hardware"; width: parent.width; spacing: Style.space(18)
+                        visible: root.available && root.page === "hardware"; width: parent.width; spacing: Style.space(18)
                         Row {
                             width: parent.width
                             Label { width: parent.width - phantomButton.width; text: "48V phantom power"; anchors.verticalCenter: parent.verticalCenter }
@@ -421,6 +430,7 @@ Panel {
                         Action { id: backButton; text: "← Back to controls"; foreground: Color.accent; onClicked: root.back() }
                     }
                     Row {
+                        visible: !root.disconnected
                         width: parent.width
                         Caption { width: parent.width - refreshButton.width; anchors.verticalCenter: parent.verticalCenter; text: Object.keys(root.highlights).length ? "Device change" : Object.keys(root.pending).length ? "Saving…" : root.stale ? "Settings unavailable" : "Live hardware settings" }
                         Action { id: refreshButton; text: "Refresh"; enabled: worker.running; onClicked: { root.error = ""; root.send("refresh") } }

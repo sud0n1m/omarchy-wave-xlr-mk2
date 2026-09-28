@@ -1,0 +1,13 @@
+{
+  "duration_s": 8,
+  "read_syscalls": 0,
+  "read_characters": 0,
+  "usb_device_fds": 0,
+  "child_processes": [],
+  "state": {
+    "connected": false,
+    "present": false,
+    "stale": false,
+    "usb": false
+  }
+}

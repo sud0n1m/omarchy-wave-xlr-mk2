@@ -35,6 +35,12 @@ assert.equal(ctx.highlights,highlights,'heartbeat must not invalidate highlights
 assert.equal(ctx.watchdogCount,1,'heartbeat must reset watchdog');
 ctx.acceptState({...ctx.state,gain:45});
 assert.equal(ctx.state.gain,45,'changed device values must still be delivered');
-console.log('PASS unchanged edits, final flush, heartbeat identity and changed state');
+ctx.transportError='Device worker stopped'; ctx.error='Old error';
+ctx.acceptState({connected:false,usb:false,stale:false,present:false});
+assert.equal(ctx.stale,false,'known absence is not stale/reconnecting');
+assert.equal(ctx.transportError,'');assert.equal(ctx.error,'');
+assert.equal(ctx.page,'controls');assert.equal(Object.keys(ctx.desired).length,0);
+assert.equal(ctx.state.gain,undefined,'absence clears old settings');
+console.log('PASS unchanged edits, final flush, heartbeat identity, changed state and absence');
 """
 subprocess.run(['node', '-e', script], check=True)
