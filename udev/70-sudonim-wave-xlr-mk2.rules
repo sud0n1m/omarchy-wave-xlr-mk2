@@ -1,1 +1,2 @@
+# Managed by sudonim.wave-xlr. Ownership is recorded by the USB setup helper.
 SUBSYSTEM=="usb", ATTR{idVendor}=="0fd9", ATTR{idProduct}=="00b6", MODE="0660", TAG+="uaccess"

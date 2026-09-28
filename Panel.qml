@@ -292,47 +292,13 @@ Panel {
         bar: root.bar
         text: ""
         iconComponent: Component {
-            Canvas {
-                id: deviceIcon
-                readonly property color ink: root.state.mute ? Color.urgent : button.foreground
-                readonly property bool muted: root.state.mute === true
-                onInkChanged: requestPaint()
-                onMutedChanged: requestPaint()
-                onWidthChanged: requestPaint()
-                onHeightChanged: requestPaint()
-                onPaint: {
-                    var ctx = getContext("2d")
-                    ctx.reset()
-                    ctx.scale(width / 24, height / 24)
-                    ctx.strokeStyle = ink
-                    ctx.fillStyle = ink
-                    ctx.lineWidth = 1.65
-                    ctx.lineCap = "round"
-                    ctx.lineJoin = "round"
-                    // Rounded interface chassis, central dial and three mode LEDs.
-                    ctx.beginPath()
-                    ctx.moveTo(5, 2.5); ctx.lineTo(19, 2.5)
-                    ctx.quadraticCurveTo(21.5, 2.5, 21.5, 5)
-                    ctx.lineTo(21.5, 19)
-                    ctx.quadraticCurveTo(21.5, 21.5, 19, 21.5)
-                    ctx.lineTo(5, 21.5)
-                    ctx.quadraticCurveTo(2.5, 21.5, 2.5, 19)
-                    ctx.lineTo(2.5, 5)
-                    ctx.quadraticCurveTo(2.5, 2.5, 5, 2.5)
-                    ctx.stroke()
-                    ctx.beginPath(); ctx.arc(12, 10.5, 5, 0, Math.PI * 2); ctx.stroke()
-                    ctx.beginPath(); ctx.moveTo(12, 6); ctx.lineTo(12, 8); ctx.stroke()
-                    for (var i = 0; i < 3; ++i) {
-                        ctx.beginPath(); ctx.arc(8 + i * 4, 18, 0.9, 0, Math.PI * 2); ctx.fill()
-                    }
-                    if (muted) {
-                        ctx.beginPath(); ctx.moveTo(5, 19); ctx.lineTo(19, 5); ctx.stroke()
-                    }
-                }
+            DeviceIcon {
+                ink: root.state.mute ? Color.urgent : button.foreground
+                muted: root.state.mute === true
             }
         }
         opacity: root.available ? 1 : 0.55
-        tooltipText: root.available ? "Wave XLR MK.2 · " + root.state.gain + " dB" + (root.state.mute ? " · MUTED" : "") : "Wave XLR MK.2 · " + (root.transportError || root.error || (root.disconnected ? "Not connected" : "Reconnecting"))
+        tooltipText: root.available ? "Elgato Wave XLR MK.2 · " + root.state.gain + " dB" + (root.state.mute ? " · MUTED" : "") : "Elgato Wave XLR MK.2 · " + (root.transportError || root.error || (root.disconnected ? "Not connected" : "Reconnecting"))
         onPressed: root.toggle()
     }
     KeyboardPanel {
@@ -358,7 +324,11 @@ Panel {
                         width: parent.width
                         Column {
                             width: parent.width - helpButton.width; spacing: Style.space(5)
-                            Label { text: root.page === "controls" ? "Wave XLR MK.2" : "Hardware settings"; font.pixelSize: Style.font.heading; font.bold: true }
+                            Row {
+                                width: parent.width; spacing: Style.space(10)
+                                DeviceIcon { id: headingIcon; width: Style.space(24); height: width; ink: root.fg; anchors.verticalCenter: parent.verticalCenter }
+                                Label { width: parent.width - headingIcon.width - parent.spacing; wrapMode: Text.WordWrap; text: root.page === "controls" ? "Elgato Wave XLR MK.2" : "Hardware settings"; font.pixelSize: Style.font.heading; font.bold: true }
+                            }
                             Caption { text: root.disconnected ? "Not connected" : root.stale ? "Reconnecting" : root.state.usb ? "Connected · USB" : "Connected · basic audio"; color: root.disconnected ? root.fg : root.stale ? Color.urgent : root.fg }
                         }
                         Action { id: helpButton; visible: !root.disconnected; text: "?"; tooltipText: "Controls and keyboard help"; bordered: true; onClicked: root.helpOpen = !root.helpOpen }
@@ -375,7 +345,7 @@ Panel {
                     }
                     Caption {
                         width: parent.width; wrapMode: Text.WordWrap; visible: root.disconnected
-                        text: "Connect your Wave XLR or dock your laptop. Controls will appear automatically."
+                        text: "Connect your Elgato Wave XLR MK.2 or dock your laptop. Controls will appear automatically."
                     }
                     Column {
                         visible: root.available && root.page === "controls"; width: parent.width; spacing: Style.space(14)

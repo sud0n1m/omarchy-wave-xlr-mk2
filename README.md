@@ -1,6 +1,11 @@
-# Wave XLR MK.2 for Omarchy
+# Elgato Wave XLR MK.2 for Omarchy
 
-An Omarchy shell plugin for Elgato Wave XLR MK.2. Click the outlined
+<img src="icon.svg" width="64" height="64" alt="Elgato Wave XLR MK.2 device icon">
+
+Linux USB audio interface controls for **Elgato Wave XLR MK.2** (also written
+Wave XLR MK2): microphone gain, mute, headphones, monitor mix and onboard DSP,
+in a native Omarchy shell plugin. This supports the MK.2, not the original Wave
+XLR, Wave XLR Pro or Stream Deck XLR Dock. Click the outlined
 Wave XLR device icon beside the stock audio control. The icon follows the bar
 color, dims on loss of connection, and uses the theme's urgent color plus a slash
 when muted. The panel inherits the live Omarchy theme, font, spacing and scale.
@@ -9,7 +14,7 @@ Built with native Omarchy controls: prominent gain, monitoring, aligned onboard-
 switches, and a separate hardware-settings page. Some native details (square
 switches, borders, sizing) intentionally follow the shell rather than the mockup.
 
-![Wave XLR MK.2 controls inheriting the Omarchy theme](preview.png)
+![Elgato Wave XLR MK.2 controls and device icon inheriting the Omarchy theme](preview.png)
 
 ## Controls
 
@@ -113,17 +118,30 @@ omarchy restart shell
 ### Manual USB setup
 
 Basic gain, mute and headphone controls can use ALSA without vendor USB access.
-For onboard DSP and the full control panel, install the included product-specific
-udev rule from the downloaded plugin directory:
+For onboard DSP and the full control panel, use the ownership-checking setup
+command after building the worker. These are explicit administrator actions;
+the plugin never runs them automatically:
 
 ```bash
-sudo install -m 0644 ~/.config/omarchy/plugins/sudonim.wave-xlr/udev/70-wave-xlr-mk2.rules /etc/udev/rules.d/
+sudo ~/.config/omarchy/plugins/sudonim.wave-xlr/libexec/wave-xlr-control --install-udev-rule
 sudo udevadm control --reload-rules
 ```
 
 Reconnect the Mk.2. The rule grants the active local user access only to this
-product. Installation does not run privileged commands or install the rule
-automatically. Tested with Omarchy's Quickshell-based shell; this is not a Waybar
+product. The helper creates `70-sudonim-wave-xlr-mk2.rules` under
+`/etc/udev/rules.d/` using an atomic operation that cannot overwrite an existing
+path. A root-only `.sudonim-wave-xlr-mk2/` directory beside it records ownership
+with a hard link to the installed inode. Repeated setup accepts only that exact
+inode with unchanged contents, owner and permissions. Existing files (even with
+identical contents), symlinks, modified rules and replacements are preserved and
+reported as conflicts. The helper does not claim USB or contact the device.
+
+**Upgrading from 1.2.1 or earlier:** the old `70-wave-xlr-mk2.rules` path is left
+untouched, since ownership cannot be established. An existing rule can continue
+providing access. Do not delete or overwrite it merely because of its filename;
+review its provenance or use its owning package/tool to manage it.
+
+Tested with Omarchy's Quickshell-based shell; this is not a Waybar
 module. The plugin claims only the vendor control interface; the kernel keeps the audio streaming interface.
 
 Optional placement and connection check:
@@ -141,19 +159,25 @@ Do not install the Mk.1 WirePlumber workaround for this Mk.2.
 
 ## Removal
 
+If you installed this version's USB rule and no other Wave XLR MK.2 tool needs
+it, remove it **before** removing the plugin (the native helper is needed):
+
+```bash
+sudo ~/.config/omarchy/plugins/sudonim.wave-xlr/libexec/wave-xlr-control --remove-udev-rule
+sudo udevadm control --reload-rules
+```
+
+Removal requires the original inode plus matching receipt, contents, owner and
+permissions. It refuses to delete an unowned, modified, replaced or symlinked
+rule. Do not bypass a refusal with `rm`; leave the rule for its owner to review.
+The empty private ownership directory and setup lock remain for safe concurrent
+setup; neither grants device access. The old generic rule is never removed.
+
 ```bash
 omarchy plugin remove sudonim.wave-xlr
 ```
 
-If you installed the USB permission rule above and no other Wave XLR MK.2 tool
-needs it, remove that specific rule:
-
-```bash
-sudo rm /etc/udev/rules.d/70-wave-xlr-mk2.rules
-sudo udevadm control --reload-rules
-```
-
-Reconnect the device to apply the permission change. Removing the plugin leaves
+Reconnect the device to apply a permission change. Removing the plugin leaves
 hardware settings and any explicitly selected PipeWire defaults unchanged.
 
 ## Verification
@@ -169,6 +193,9 @@ The Rust tests use fake devices and clocks for protocol preservation, bounds,
 readback, reconnects, ALSA fallback, stale-state handling, and deadlines. Framing
 and subprocess tests cover oversized/invalid input, timeout cleanup, and output
 larger than a pipe buffer. These tests never write to real hardware.
+Eight setup tests cover ownership, collisions (including identical files),
+modified/replaced rules, symlinks, permissions, concurrent setup and interrupted
+installation, using isolated temporary directories without administrator access.
 
 The optional UI tests are run by Rust and exercise JavaScript functions and slider
 components extracted from the actual `Panel.qml`. The slider tests use an isolated
@@ -188,3 +215,5 @@ have not been measured.
 [MIT](LICENSE). Thanks to [OpenXLR](https://github.com/emaspa/openxlr) for documenting
 the Wave XLR MK.2 USB protocol. This project implements those hardware mappings
 in its own control worker and does not bundle or execute OpenXLR.
+The device-outline icon is original artwork for this community plugin, shared
+by the bar and panel heading. This project is not affiliated with Elgato.

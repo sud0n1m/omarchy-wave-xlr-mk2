@@ -1,10 +1,10 @@
 {
   "schemaVersion": 1,
   "id": "sudonim.wave-xlr",
-  "name": "Wave XLR MK.2",
-  "version": "1.2.1",
+  "name": "Elgato Wave XLR MK.2",
+  "version": "1.2.2",
   "author": "Colin Nederkoorn",
-  "description": "Themed Wave XLR MK.2 hardware controls with responsive knob updates",
+  "description": "Elgato Wave XLR MK.2 (MK2) USB audio interface controls: microphone gain, mute, headphones, monitor mix and onboard DSP in a themed Omarchy bar panel.",
   "kinds": [
     "bar-widget"
   ],
@@ -12,7 +12,7 @@
     "barWidget": "Panel.qml"
   },
   "barWidget": {
-    "displayName": "Wave XLR MK.2",
+    "displayName": "Elgato Wave XLR MK.2",
     "category": "System",
     "allowMultiple": false,
     "defaultSection": "right"

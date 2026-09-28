@@ -2,6 +2,7 @@ mod device;
 mod framing;
 mod hotplug;
 mod platform;
+mod udev_setup;
 mod worker;
 use serde_json::{Value, json};
 use std::{
@@ -19,6 +20,17 @@ fn emit(message: &Value) -> io::Result<()> {
     stdout.flush()
 }
 fn run() -> Result<(), String> {
+    let args: Vec<String> = std::env::args().skip(1).collect();
+    if let Some(action) = args.first().and_then(|arg| match arg.as_str() {
+        "--install-udev-rule" => Some("install"),
+        "--remove-udev-rule" => Some("remove"),
+        _ => None,
+    }) {
+        if args.len() != 1 {
+            return Err("USB rule setup accepts no extra arguments".into());
+        }
+        return udev_setup::run(action);
+    }
     let runtime = std::env::var_os("XDG_RUNTIME_DIR")
         .map(std::path::PathBuf::from)
         .unwrap_or_else(|| {
@@ -35,7 +47,6 @@ fn run() -> Result<(), String> {
             "Wave XLR owner already running; send commands through its NDJSON stdin".into(),
         );
     }
-    let args: Vec<String> = std::env::args().skip(1).collect();
     // Listen before inventory so an attachment during startup cannot be missed.
     let mut hotplug = hotplug::Hotplug::new()?;
     let start = Instant::now();
