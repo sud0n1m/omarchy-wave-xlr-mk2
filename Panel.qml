@@ -24,6 +24,7 @@ Panel {
     property int serial: 0
     property int sequence: -1
     property var pending: ({})
+    property var requests: ({})
     property var desired: ({})
     property var queued: ({})
     property var dragging: ({})
@@ -40,7 +41,9 @@ Panel {
     function send(op, extra) {
         if (!worker.running) return -1
         var cmd = extra || {}; cmd.op = op; cmd.id = ++serial
-        if (op === "defaults") { defaultsDeadline = Date.now() + 12000; defaultsId = cmd.id; armWatchdog() }
+        if (op === "defaults") { defaultsDeadline = Date.now() + 12000; defaultsId = cmd.id }
+        var r = copy(requests); r[cmd.id] = true; requests = r
+        armWatchdog()
         worker.write(JSON.stringify(cmd) + "\n")
         return cmd.id
     }
@@ -68,6 +71,10 @@ Panel {
         watchdog.interval = Math.max(3100, defaultsDeadline - Date.now() + 100)
         watchdog.restart()
     }
+    function syncWatchdog(next) {
+        if (next.present === false && next.stale === false && Object.keys(requests).length === 0) watchdog.stop()
+        else armWatchdog()
+    }
     function scheduleHighlights() {
         var soonest = Infinity
         for (var key in highlights) soonest = Math.min(soonest, highlights[key])
@@ -76,7 +83,7 @@ Panel {
     }
     function acceptState(next) {
         lastSeen = Date.now(); stale = !!next.stale
-        armWatchdog()
+        syncWatchdog(next)
         if ((next.connected && !next.stale) || next.present === false) transportError = ""
         var changed = false
         for (var key in next) if (next[key] !== state[key]) { changed = true; break }
@@ -110,7 +117,8 @@ Panel {
                 acceptState(msg.state)
             } else if (msg.type === "result") {
                 if (msg.id === defaultsId) { defaultsId = -1; defaultsDeadline = 0 }
-                if (msg.state) acceptState(msg.state)
+                var r = copy(requests); delete r[msg.id]; requests = r
+                if (msg.state) acceptState(msg.state); else syncWatchdog(state)
                 var p = copy(pending), d = copy(desired)
                 for (var key in p) if (p[key] === msg.id) {
                     delete p[key]
@@ -137,6 +145,7 @@ Panel {
         onStarted: { root.lastSeen = Date.now(); root.sequence = -1; root.armWatchdog(); root.send("poll", {intervalMs:root.opened ? 50 : 500}) }
         onExited: {
             watchdog.stop()
+            root.requests = ({}); root.defaultsDeadline = 0; root.defaultsId = -1
             root.stale = true; root.pending = ({}); root.desired = ({}); root.queued = ({})
             root.transportError = "Device worker stopped. Reconnecting…"; restart.start()
         }
@@ -149,7 +158,7 @@ Panel {
         onTriggered: {
             root.stale = true
             if (worker.running) {
-                root.queued = ({}); root.pending = ({}); root.desired = ({})
+                root.queued = ({}); root.pending = ({}); root.desired = ({}); root.requests = ({})
                 root.transportError = "Device worker timed out. Reconnecting…"
                 worker.signal(9)
             }
@@ -166,7 +175,7 @@ Panel {
     }
     IpcHandler {
         target: "sudonim.wave-xlr-status"
-        function status(): string { return JSON.stringify({state:root.state,stale:root.stale,workerRunning:worker.running,opened:root.opened,pending:root.pending,sequence:root.sequence,error:root.error || root.transportError,displayedGain:root.value("gain"),page:root.page,focus:root.focusedControl,pendingCount:Object.keys(root.pending).length}) }
+        function status(): string { return JSON.stringify({state:root.state,stale:root.stale,workerRunning:worker.running,opened:root.opened,pending:root.pending,sequence:root.sequence,error:root.error || root.transportError,displayedGain:root.value("gain"),page:root.page,focus:root.focusedControl,pendingCount:Object.keys(root.pending).length,watchdogRunning:watchdog.running,requestCount:Object.keys(root.requests).length}) }
     }
     function ensureVisible(item) {
         if (item && item.objectName) focusedControl = item.objectName

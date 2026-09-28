@@ -31,7 +31,7 @@ switches, borders, sizing) intentionally follow the shell rather than the mockup
 A single persistent Rust worker owns the vendor USB interface. The panel uses
 newline-delimited JSON on stdin/stdout, rather than spawning a process per poll.
 It reads every 50 ms while open and 500 ms while closed, sending changed state
-plus a liveness frame at least once per second in normal operation. Incoming
+plus a liveness frame at least once per second while hardware is present. Incoming
 reads never disable sliders. Local drags display immediately, coalesce writes
 at 50 ms, and flush the final release. Pending IDs protect newer edits from older
 acknowledgments. Device-side changes briefly highlight the affected number.
@@ -45,15 +45,18 @@ Only one worker can own the lock; the standalone CLI fails fast while it runs.
 The current deployment is a single-monitor bar; multi-instance ownership is not
 implemented and must be addressed before enabling duplicate bar instances.
 
-Background efficiency (v1.2.0): the worker blocks on stdin until the next
+Background efficiency (v1.2.1): while connected, the worker blocks until the next
 500 ms device check or 1-second heartbeat; there is no extra 100 ms wake loop.
 The UI uses one-shot watchdog/highlight timers, ignores identical state for
 control bindings, and suppresses writes when the snapped value has not changed.
 When physically disconnected, a compact panel replaces the controls. One initial
 sysfs inventory and passive udev notifications track attachment; there are no USB
 open attempts, control reads, ALSA subprocesses, or periodic inventory scans while
-absent. A one-second IPC heartbeat keeps the shell watchdog informed. Controls
-return after attachment; reconnect backoff applies only while hardware is present
+absent. After announcing absence, the worker blocks indefinitely on its device
+notification socket and stdin: no heartbeat or timer wakeups. The panel stops its
+watchdog while idle and absent, but still detects process exits and starts a
+bounded timeout for each user command. A device-arrival notice restarts the UI
+watchdog before the worker opens USB. Controls return after attachment; reconnect backoff applies only while hardware is present
 but unavailable. libusb is linked directly. Permission-only
 ALSA fallback reads all basic controls with one process, every 2 seconds while
 closed or 500 ms while open. The normal USB path starts no polling subprocesses.
@@ -171,7 +174,8 @@ The original Python implementation and its tests remain under `tests/reference/`
 for comparison; the production panel does not execute them. Historical Python
 measurements are in [the efficiency review](docs/efficiency.md). See
 [the Rust migration report](docs/rust-migration.md) for current verification and
-measurement limits. Physical-knob-to-screen latency and acoustic DSP quality
+measurement limits. [Event-only idle verification](docs/event-only-idle.md) covers
+v1.2.1, which removes the unplugged heartbeat. Physical-knob-to-screen latency and acoustic DSP quality
 have not been measured.
 
 ## License and acknowledgments

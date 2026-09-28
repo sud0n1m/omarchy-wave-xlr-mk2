@@ -176,7 +176,7 @@ fn command<C: Fn() -> u64>(worker: &mut Worker<FakePlatform, C>, message: Value)
 }
 
 #[test]
-fn absent_startup_only_heartbeats_without_polling_usb_alsa_or_inventory() {
+fn absent_startup_sleeps_without_heartbeats_or_device_probes() {
     let (mut worker, now, shared) = fixture();
     shared.borrow_mut().attached = false;
     worker.sample(false);
@@ -185,17 +185,18 @@ fn absent_startup_only_heartbeats_without_polling_usb_alsa_or_inventory() {
         json!({"connected":false,"usb":false,"stale":false,"present":false})
     );
     assert_eq!(worker.next_poll, u64::MAX);
-    assert_eq!(worker.wait_ms(), 1000);
+    assert_eq!(worker.wait_ms(), None);
     worker.take_events();
 
     for instant in [2000, 3000, 4000, 10000, 60000] {
         now.set(instant);
         worker.tick();
         let events = worker.take_events();
-        assert_eq!(events.len(), 1);
-        assert_eq!(events[0]["state"]["present"], false);
-        assert_eq!(events[0]["sampledAtMs"], 0);
-        assert_eq!(worker.wait_ms(), 1000);
+        assert!(
+            events.is_empty(),
+            "known absence must not generate heartbeats"
+        );
+        assert_eq!(worker.wait_ms(), None);
         for message in [
             json!({"id":1,"op":"refresh"}),
             json!({"id":2,"op":"poll","intervalMs":50}),
@@ -243,6 +244,17 @@ fn attach_event_resumes_sampling_immediately_and_regular_ticks_do_not_scan_inven
     worker.take_events();
 
     worker.hardware_changed();
+    let wake = worker.take_events();
+    assert_eq!(wake.len(), 1);
+    assert_eq!(wake[0]["state"]["present"], true);
+    assert_eq!(wake[0]["state"]["stale"], true);
+    assert_eq!(
+        shared.borrow().opens,
+        0,
+        "watchdog wake notice must precede USB work"
+    );
+    assert_eq!(worker.wait_ms(), Some(0));
+    worker.tick();
 
     assert_eq!(shared.borrow().attached_checks, 2);
     assert_eq!(shared.borrow().opens, 1);
@@ -305,6 +317,7 @@ fn detach_event_releases_usb_and_stops_all_device_probes_until_reattachment() {
     }
     shared.borrow_mut().attached = true;
     worker.hardware_changed();
+    worker.tick();
     assert_eq!(worker.state["connected"], true);
     assert_eq!(worker.state["gain"], 43);
     assert_eq!(shared.borrow().opens, 2);
@@ -373,7 +386,7 @@ fn poll_updates_immediately_then_suppresses_unchanged_samples_until_heartbeat() 
     assert_eq!(initial.len(), 1);
     assert_eq!(initial[0]["state"]["gain"], 43);
     assert_eq!(initial[0]["sampledAtMs"], 1000);
-    assert_eq!(worker.wait_ms(), 500);
+    assert_eq!(worker.wait_ms(), Some(500));
     assert_eq!(
         command(&mut worker, json!({"id":1,"op":"poll","intervalMs":50}))["ok"],
         true
@@ -399,7 +412,7 @@ fn disconnected_backoff_keeps_liveness_without_extra_device_probes() {
     worker.backoff = 5000;
     worker.sample(false);
     assert_eq!(worker.next_poll, 6000);
-    assert_eq!(worker.wait_ms(), 1000);
+    assert_eq!(worker.wait_ms(), Some(1000));
     worker.take_events();
     for instant in [2000, 3000, 4000, 5000] {
         now.set(instant);
@@ -408,7 +421,7 @@ fn disconnected_backoff_keeps_liveness_without_extra_device_probes() {
         assert_eq!(events.len(), 1);
         assert_eq!(events[0]["state"]["stale"], true);
         assert_eq!(events[0]["sampledAtMs"], 0);
-        assert_eq!(worker.wait_ms(), 1000);
+        assert_eq!(worker.wait_ms(), Some(1000));
         assert_eq!(shared.borrow().opens, 1);
     }
     now.set(6000);
@@ -474,7 +487,7 @@ fn fallback_polls_slowly_and_does_not_flicker_during_permission_retries() {
     shared.borrow_mut().open_error = Some(("Permission denied".into(), true));
     worker.sample(false);
     assert_eq!(worker.next_poll, 3000);
-    assert_eq!(worker.wait_ms(), 1000);
+    assert_eq!(worker.wait_ms(), Some(1000));
     worker.take_events();
     now.set(2000);
     worker.tick();
@@ -799,4 +812,26 @@ fn read_failure_heartbeats_retain_last_successful_sample_time() {
     assert_eq!(heartbeat[0]["sampledAtMs"], 1000);
     assert_eq!(shared.borrow().opens, 1);
     assert_eq!(shared.borrow().drops, 1);
+}
+
+#[test]
+fn failed_attach_is_present_and_keeps_timed_recovery_after_indefinite_sleep() {
+    let (mut worker, now, shared) = fixture();
+    shared.borrow_mut().attached = false;
+    worker.sample(false);
+    assert_eq!(worker.wait_ms(), None);
+    worker.take_events();
+    shared.borrow_mut().attached = true;
+    shared.borrow_mut().open_error = Some(("Interface busy".into(), false));
+    worker.hardware_changed();
+    let waking = worker.take_events();
+    assert_eq!(waking[0]["state"]["present"], true);
+    assert_eq!(shared.borrow().opens, 0);
+    worker.tick();
+    assert_eq!(worker.state["present"], true);
+    assert_eq!(worker.state["stale"], true);
+    assert_eq!(worker.wait_ms(), Some(250));
+    now.set(1250);
+    worker.tick();
+    assert_eq!(shared.borrow().opens, 2);
 }

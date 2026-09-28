@@ -58,7 +58,11 @@ impl<P: Platform, C: Fn() -> u64> Worker<P, C> {
         }
         let changed = state != self.state;
         self.state = state;
-        if changed || force || self.last_emit.is_none_or(|t| now.saturating_sub(t) >= 1000) {
+        if changed
+            || force
+            || (self.attached != Some(false)
+                && self.last_emit.is_none_or(|t| now.saturating_sub(t) >= 1000))
+        {
             self.seq += 1;
             self.events.push(json!({"type":"state","state":self.state,"seq":self.seq,"sampledAtMs":self.sampled_at}));
             self.last_emit = Some(now);
@@ -72,15 +76,43 @@ impl<P: Platform, C: Fn() -> u64> Worker<P, C> {
         state["connected"] = false.into();
         state["usb"] = false.into();
         state["stale"] = true.into();
+        match self.attached {
+            Some(present) => state["present"] = present.into(),
+            None => {
+                state.as_object_mut().unwrap().remove("present");
+            }
+        }
         state["error"] = error.into();
         self.publish(state, false, false);
     }
     pub fn hardware_changed(&mut self) {
-        // Called only at a udev event: no periodic sysfs or USB discovery while absent.
+        // Inventory is passive. Queue a wake notice BEFORE potentially blocking USB
+        // work so the shell can resume its watchdog before our next tick opens USB.
+        let was_absent = self.attached == Some(false);
         self.attached = None;
         self.next_connect = 0;
         self.backoff = 250;
-        self.sample(true);
+        match self.platform.attached() {
+            Ok(attached) => {
+                self.attached = Some(attached);
+                if !attached {
+                    self.sample(true);
+                    return;
+                }
+                if was_absent {
+                    self.publish(
+                        json!({"connected":false,"usb":false,"present":true,"stale":true}),
+                        true,
+                        false,
+                    );
+                }
+                self.next_poll = self.now();
+            }
+            Err(error) => {
+                self.failed(error);
+                self.next_poll = self.now() + 5000;
+            }
+        }
     }
     pub fn sample(&mut self, force: bool) {
         if self.attached.is_none() {
@@ -156,6 +188,9 @@ impl<P: Platform, C: Fn() -> u64> Worker<P, C> {
         };
     }
     pub fn tick(&mut self) {
+        if self.attached == Some(false) {
+            return;
+        }
         if self.now() >= self.next_poll {
             self.sample(false);
         } else if self
@@ -165,10 +200,15 @@ impl<P: Platform, C: Fn() -> u64> Worker<P, C> {
             self.publish(self.state.clone(), false, false);
         }
     }
-    pub fn wait_ms(&self) -> u64 {
-        self.next_poll
-            .min(self.last_emit.map_or(0, |t| t + 1000))
-            .saturating_sub(self.now())
+    pub fn wait_ms(&self) -> Option<u64> {
+        if self.attached == Some(false) {
+            return None;
+        }
+        Some(
+            self.next_poll
+                .min(self.last_emit.map_or(0, |t| t + 1000))
+                .saturating_sub(self.now()),
+        )
     }
     fn execute(&mut self, message: &Value) -> Result<(), String> {
         let id = &message["id"];

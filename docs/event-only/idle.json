@@ -1,0 +1,13 @@
+{
+  "duration_s": 20.000844228998176,
+  "cpu_ticks": 0,
+  "voluntary_context_switches": 0,
+  "read_syscalls": 0,
+  "write_syscalls": 0,
+  "rss_mib": 2.859375,
+  "sequence_unchanged": true,
+  "watchdog_running": false,
+  "requests": 0,
+  "wait_channel": "poll_schedule_timeout.constprop.0",
+  "process_state": "S"
+}

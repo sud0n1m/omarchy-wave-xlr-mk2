@@ -1,5 +1,7 @@
 # Rust worker — v1.2.0
 
+Historical migration measurements. [v1.2.1 removes the unplugged heartbeat](event-only-idle.md).
+
 The production control worker is Rust. While undocked, the UI shows a compact
 “Not connected” panel and hides hardware controls. A passive udev monitor starts
 before the initial sysfs inventory. No USB handles, reads, ALSA calls, or periodic

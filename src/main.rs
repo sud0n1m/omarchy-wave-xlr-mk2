@@ -101,7 +101,9 @@ fn run() -> Result<(), String> {
             libc::poll(
                 pfds.as_mut_ptr(),
                 pfds.len() as libc::nfds_t,
-                owner.wait_ms().min(i32::MAX as u64) as i32,
+                owner
+                    .wait_ms()
+                    .map_or(-1, |ms| ms.min(i32::MAX as u64) as i32),
             )
         };
         if ready < 0 {
@@ -119,6 +121,10 @@ fn run() -> Result<(), String> {
         }
         if pfds[1].revents & libc::POLLIN != 0 && hotplug.changed() {
             owner.hardware_changed();
+            // Deliver the wake notice before tick()/commands can touch USB.
+            for event in owner.take_events() {
+                emit(&event).map_err(|e| e.to_string())?;
+            }
         }
         if pfds[0].revents == 0 {
             continue;
