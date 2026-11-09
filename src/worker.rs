@@ -242,17 +242,16 @@ impl<P: Platform, C: Fn() -> u64> Worker<P, C> {
                     .filter(|v| v.is_finite())
                     .ok_or("Control value must be a finite number")?;
                 // Validate before touching hardware. Invalid commands never disconnect it.
-                device::modify(
-                    &device::Blocks {
-                        blend: [0; 6],
-                        settings: [0; 38],
-                        headphones: [0; 2],
-                    },
-                    key,
-                    value,
-                )?;
+                device::check_command(key, value)?;
                 if self.device.is_none() && !["gain", "headphones", "mute"].contains(&key) {
                     return Err("USB permission needed for DSP controls".into());
+                }
+                // Refuse EQ edits the last sample does not offer, before any
+                // transfer, so a refusal never looks like a transport failure.
+                if device::is_eq_control(key) && self.state.get(key).is_none() {
+                    return Err(device::eq_unavailable(
+                        self.state["eqUnavailable"].as_str().unwrap_or(""),
+                    ));
                 }
                 let outcome = if let Some(device) = self.device.as_mut() {
                     (|| {

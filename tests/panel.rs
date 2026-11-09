@@ -90,8 +90,16 @@ fn panel_slider_gestures() {
         .find("    component Effect:")
         .expect("Effect component")
         + start;
-    let harness =
-        include_str!("fixtures/panel_slider.qml.in").replace("@@COMPONENTS@@", &source[start..end]);
+    let helpers = source
+        .find("    readonly property var eqTypes:")
+        .expect("EQ helpers");
+    let helpers_end = source[helpers..]
+        .find("    function eqUnavailableText()")
+        .expect("EQ helpers end")
+        + helpers;
+    let harness = include_str!("fixtures/panel_slider.qml.in")
+        .replace("@@FUNCTIONS@@", &source[helpers..helpers_end])
+        .replace("@@COMPONENTS@@", &source[start..end]);
     let workspace = Workspace::new("slider-test");
     for module in ["Commons", "Ui"] {
         let source = Path::new("/usr/share/omarchy/shell").join(module);
@@ -119,8 +127,8 @@ fn panel_slider_gestures() {
         .split_whitespace()
         .take(2)
         .collect();
-    // Seven gestures plus initTestCase must all run; an empty suite cannot pass.
-    assert_eq!(counts, ["8", "0"], "Unexpected QtTest counts:\n{output}");
+    // Ten gestures plus initTestCase must all run; an empty suite cannot pass.
+    assert_eq!(counts, ["11", "0"], "Unexpected QtTest counts:\n{output}");
     for line in output.lines().filter(|line| line.contains("WAVE ")) {
         println!("{line}");
     }

@@ -30,6 +30,7 @@ impl FakeState {
             blend: [0; 6],
             settings: [0; 38],
             headphones: [0; 2],
+            firmware: None,
         };
         blocks.settings[0] = 43;
         Self {
@@ -834,4 +835,71 @@ fn failed_attach_is_present_and_keeps_timed_recovery_after_indefinite_sleep() {
     now.set(1250);
     worker.tick();
     assert_eq!(shared.borrow().opens, 2);
+}
+
+fn give_eq(fake: &mut FakeState) {
+    fake.blocks.firmware = Some([1, 0, 15]);
+    for (band, freq) in [60u16, 227, 860, 10237].into_iter().enumerate() {
+        let at = 18 + band * 5;
+        fake.blocks.settings[at] = 0x05; // on, bell
+        fake.blocks.settings[at + 2..at + 4].copy_from_slice(&freq.to_le_bytes());
+    }
+}
+
+#[test]
+fn hardware_eq_edits_confirm_readback_and_preserve_the_block() {
+    let (mut worker, _, shared) = fixture();
+    give_eq(&mut shared.borrow_mut());
+    shared.borrow_mut().blocks.settings[2] = 0x04; // ClipGuard off, EQ off
+    worker.sample(true);
+    assert_eq!(worker.state["eq"], false);
+    assert_eq!(worker.state["eq3Freq"], 860);
+    assert_eq!(worker.state["firmware"], "1.0.15");
+    for (id, key, value, expected) in [
+        (1, "eq", 1.0, json!(true)),
+        (2, "eq3Freq", 1200.0, json!(1200)),
+        (3, "eq3Gain", -3.5, json!(-3.5)),
+        (4, "eq3Q", 2.0, json!(1.98)), // round(64 log10 2) = 19
+        (5, "eq3Type", 4.0, json!(4)),
+        (6, "eq3On", 0.0, json!(false)),
+    ] {
+        let result = command(
+            &mut worker,
+            json!({"id":id,"op":"set","key":key,"value":value}),
+        );
+        assert_eq!(result["ok"], true, "{key}: {result}");
+        assert_eq!(result["state"][key], expected, "{key}");
+    }
+    let fake = shared.borrow();
+    assert!(
+        fake.writes
+            .iter()
+            .all(|(block, data)| *block == 4 && data.len() == 38)
+    );
+    assert_eq!(fake.blocks.settings[2], 0x05, "ClipGuard-off bit kept");
+    assert_eq!(&fake.blocks.settings[33..38], &[0x05, 0, 0xfd, 0x27, 0]);
+}
+
+#[test]
+fn hardware_eq_is_refused_without_writes_on_old_firmware_or_alsa() {
+    let (mut worker, _, shared) = fixture();
+    give_eq(&mut shared.borrow_mut());
+    shared.borrow_mut().blocks.firmware = Some([1, 0, 14]);
+    worker.sample(true);
+    assert_eq!(worker.state["eqUnavailable"], "firmwareOld");
+    let result = command(
+        &mut worker,
+        json!({"id":1,"op":"set","key":"eq2Gain","value":3}),
+    );
+    assert_eq!(result["ok"], false);
+    assert!(result["error"].as_str().unwrap().contains("1.0.15"));
+    assert!(shared.borrow().writes.is_empty());
+    assert_eq!(worker.state["connected"], true);
+
+    let (mut worker, _, shared) = fixture();
+    shared.borrow_mut().open_error = Some(("Permission denied".into(), true));
+    worker.sample(true);
+    let result = command(&mut worker, json!({"id":1,"op":"set","key":"eq","value":1}));
+    assert_eq!(result["ok"], false);
+    assert!(shared.borrow().alsa_calls.iter().all(Option::is_none));
 }
