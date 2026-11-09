@@ -82,9 +82,10 @@ state changes and not only host writes.
 - Each event names its control. Capture controls re-read the settings block
   and playback controls re-read the headphone block, on top of the cached
   blocks.
-- With events active: the closed panel reads every block only every 5 s; the
-  open panel reads blocks 1 and 4 (dial blend and Voice Tune strength, which
-  send no event) every 50 ms and every block every 5 s.
+- With events active: the open panel reads blocks 1 and 4 (dial blend and
+  Voice Tune strength, which send no event) every 50 ms and every block every
+  5 s. The closed panel first read every block every 5 s; see
+  [quiet idle](#quiet-idle) for its final behavior.
 - A write freshly reads only the target block, writes it and reads it back.
   The other blocks come from the cache: 3 transfers instead of 7. Its own
   control-event echo re-reads one block.
@@ -112,3 +113,41 @@ cold wake costs about 75 µs, against about 7 µs per USB transfer and about
 5 µs of JSON per change. Run-to-run CPU noise on this workstation is about
 ±30%, so open-panel and drag CPU are reported as unchanged. The panel's own
 parse and render cost in the shell is not measured.
+
+## Quiet idle
+
+After the event-driven round, the idle worker still woke 1.8 times a second:
+a liveness frame every second, which the shell parsed and used to re-arm a
+3.1 s watchdog, and a full three-block read every 5 s.
+
+Neither is needed with the panel closed. The bar shows only gain and mute,
+which the device reports as control events, and opening the panel forces a
+full read. In that state (events subscribed, device open, steady state,
+closed-panel interval) the worker now:
+
+- sends no heartbeat and does no safety read, and blocks in `poll()` with no
+  timeout;
+- marks its frames `"quiet": true`. When nothing outstanding remains, the
+  shell stops its watchdog, as it already did for an unplugged device;
+- announces entering or leaving quiet with an immediate frame, even when no
+  value changed. Lost events, a failed read or an open panel clear the flag,
+  so the next frame re-arms the watchdog and heartbeats resume.
+
+USB control transfers time out after 1 s, so a quiet worker cannot hang
+unseen. A crash still ends the process, and the shell restarts it.
+
+**Results** (same unit, deployed in the bar, panel closed, 30 s sample after
+a 5 s settle; on-CPU time and voluntary switches over all worker threads):
+
+| | v1.2.3 | v1.3.0 events | v1.3.0 quiet |
+|---|---:|---:|---:|
+| CPU, panel closed | 210–230 µs/s | 51–97 µs/s | 0 |
+| Voluntary context switches/s, panel closed | 8.96 | 1.80 | 0 |
+| Frames to the shell, idle | 1/s | 1/s | 0 |
+| Gain change (ALSA) reaching the bar | ≤ 500 ms | ~3 ms | ~3 ms |
+
+With no device activity, a 30 s sample counted zero switches and zero
+nanoseconds on-CPU. A capture-volume change through `amixer` still reached the
+bar's state within 300 ms of the check (the event path is unchanged at about
+3 ms). The open panel is unchanged.
+
