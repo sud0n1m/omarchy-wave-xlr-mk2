@@ -14,7 +14,7 @@ const vm = require('node:vm');
 const assert = require('node:assert/strict');
 const ctx = {Date, Number, opened:false, state:{connected:true,usb:true,stale:false,gain:43},
  desired:{}, queued:{}, pending:{}, requests:{}, dragging:{}, highlights:{},
- stale:false, transportError:'', error:'', supported:()=>true,
+ stale:false, workerQuiet:false, transportError:'', error:'', supported:()=>true,
  serial:0,sequence:-1,defaultsId:-1,defaultsDeadline:0,
  flushCount:0, watchdogCount:0, coalesce:{running:false,start(){}},
  flush:()=>ctx.flushCount++, writes:[]};
@@ -86,4 +86,31 @@ const defaults=ctx.send('defaults');
 assert.ok(ctx.watchdog.interval>=12000,'explicit defaults command retains longer timeout');
 ctx.receive(JSON.stringify({type:'result',id:defaults,ok:true,state:ctx.state}));
 assert.equal(ctx.watchdog.interval,3100);
-console.log('PASS state identity, edit coalescing, event-only absence, request timeouts and wake watchdog');
+{
+  // Closing the panel: the worker's frame says it is quiet; once the poll is
+  // acknowledged nothing is outstanding and the shell stops expecting heartbeats.
+  ctx.opened=false;
+  const close=ctx.send('poll',{intervalMs:500});
+  const seq=ctx.sequence;
+  ctx.receive(JSON.stringify({type:'state',seq:seq+1,sampledAtMs:5,quiet:true,state:ctx.state}));
+  assert.equal(ctx.workerQuiet,true);
+  assert.equal(ctx.watchdog.running,true,'the close poll is still outstanding');
+  ctx.receive(JSON.stringify({type:'result',id:close,ok:true}));
+  assert.equal(ctx.watchdog.running,false,'a quiet worker with the panel closed is not timed');
+  ctx.receive(JSON.stringify({type:'state',seq:seq+2,sampledAtMs:6,quiet:true,patch:{gain:47}}));
+  assert.equal(ctx.state.gain,47,'quiet frames still deliver changes');
+  assert.equal(ctx.watchdog.running,false);
+  // Any frame without the flag (lost events, a failed read) re-arms it.
+  ctx.receive(JSON.stringify({type:'state',seq:seq+3,sampledAtMs:6}));
+  assert.equal(ctx.workerQuiet,false);
+  assert.equal(ctx.watchdog.running,true,'heartbeats are expected again');
+  // A quiet flag never disarms an open panel or a stale device.
+  ctx.receive(JSON.stringify({type:'state',seq:seq+4,sampledAtMs:7,quiet:true}));
+  assert.equal(ctx.watchdog.running,false);
+  ctx.opened=true;
+  ctx.send('poll',{intervalMs:50});
+  assert.equal(ctx.watchdog.running,true,'opening times the poll');
+  ctx.receive(JSON.stringify({type:'state',seq:seq+5,sampledAtMs:8,quiet:true}));
+  assert.equal(ctx.watchdog.running,true,'an open panel is always timed');
+}
+console.log('PASS state identity, edit coalescing, event-only absence, request timeouts, wake and quiet watchdog');

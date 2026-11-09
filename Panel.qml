@@ -23,6 +23,7 @@ Panel {
     property bool helpOpen: false
     property double lastSeen: 0
     property bool stale: true
+    property bool workerQuiet: false // The worker sends no heartbeats until something changes.
     property int serial: 0
     property int sequence: -1
     property var pending: ({})
@@ -149,7 +150,8 @@ Panel {
         watchdog.restart()
     }
     function syncWatchdog(next) {
-        if (next.present === false && next.stale === false && Object.keys(requests).length === 0) watchdog.stop()
+        var idle = Object.keys(requests).length === 0
+        if (idle && ((next.present === false && next.stale === false) || (workerQuiet && !opened && next.connected === true && next.stale === false))) watchdog.stop()
         else armWatchdog()
     }
     function scheduleHighlights() {
@@ -191,6 +193,7 @@ Panel {
             if (msg.type === "state") {
                 if (msg.seq !== undefined && msg.seq <= sequence) return
                 if (msg.seq !== undefined) sequence = msg.seq
+                workerQuiet = msg.quiet === true
                 if (msg.state) acceptState(msg.state)
                 else if (msg.patch) { // Only the changed fields of a steady connected state.
                     var merged = copy(state)
@@ -231,7 +234,7 @@ Panel {
         command: [Qt.resolvedUrl("libexec/wave-xlr-control").toString().replace("file://", ""), "--watch"]
         stdinEnabled: true
         stdout: SplitParser { onRead: function(line) { root.receive(line) } }
-        onStarted: { root.lastSeen = Date.now(); root.sequence = -1; root.armWatchdog(); root.send("poll", {intervalMs:root.opened ? 50 : 500}) }
+        onStarted: { root.workerQuiet = false; root.lastSeen = Date.now(); root.sequence = -1; root.armWatchdog(); root.send("poll", {intervalMs:root.opened ? 50 : 500}) }
         onExited: {
             watchdog.stop()
             root.requests = ({}); root.defaultsDeadline = 0; root.defaultsId = -1
