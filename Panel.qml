@@ -30,6 +30,7 @@ Panel {
     property var queued: ({})
     property var dragging: ({})
     property var highlights: ({})
+    property Item eqBackButton: null
     readonly property color fg: Commons.Color.popups.text
     readonly property string family: Style.font.family
     readonly property bool disconnected: state.present === false
@@ -83,7 +84,7 @@ Panel {
     }
     function openPage(name) {
         page = name; scroll.contentY = 0
-        Qt.callLater(function() { (name === "eq" ? eqBackButton : backButton).forceActiveFocus() })
+        Qt.callLater(function() { var target = name === "eq" ? eqBackButton : backButton; if (target) target.forceActiveFocus() })
     }
     function setDragging(key, active) { var d = copy(dragging); d[key] = active; dragging = d }
     function toggleSetting(key) { edit(key, value(key) ? 0 : 1, true) }
@@ -134,7 +135,8 @@ Panel {
             if (msg.type === "state") {
                 if (msg.seq !== undefined && msg.seq <= sequence) return
                 if (msg.seq !== undefined) sequence = msg.seq
-                acceptState(msg.state)
+                if (msg.state) acceptState(msg.state)
+                else { lastSeen = Date.now(); syncWatchdog(state) } // Liveness-only heartbeat: nothing changed.
             } else if (msg.type === "result") {
                 if (msg.id === defaultsId) { defaultsId = -1; defaultsDeadline = 0 }
                 var r = copy(requests); delete r[msg.id]; requests = r
@@ -152,7 +154,9 @@ Panel {
     }
     function back() {
         var from = page
-        phantomArmed = false; page = "controls"
+        phantomArmed = false
+        if (from === "eq") { dragging = ({}); flush() } // The EQ page's sliders are destroyed on leaving.
+        page = "controls"
         Qt.callLater(function() { (from === "eq" ? eqButton : hardwareButton).forceActiveFocus() })
     }
     Component.onCompleted: worker.running = true
@@ -511,24 +515,29 @@ Panel {
                         Action { text: "Use mic + headphones as defaults"; bordered: true; enabled: root.available; onClicked: root.send("defaults") }
                         Action { id: backButton; text: "← Back to controls"; foreground: Commons.Color.accent; onClicked: root.back() }
                     }
-                    Column {
-                        visible: root.available && root.page === "eq"; width: parent.width; spacing: Style.space(14)
-                        Effect { controlKey: "eq"; label: "Equalizer" }
-                        Caption { width: parent.width; wrapMode: Text.WordWrap; text: "Runs on the device’s own processor, so it shapes the mic for every app and stays on after this panel closes. Bands set in Wave Link are kept." }
-                        Divider {}
-                        Column {
-                            width: parent.width; spacing: Style.space(14)
-                            opacity: root.value("eq") ? 1 : 0.7
-                            EqBand { number: 1 }
+                    // Created only while the EQ page is shown, so its bindings cost nothing otherwise.
+                    Loader {
+                        id: eqPage; width: parent.width
+                        active: root.available && root.page === "eq"; visible: active
+                        sourceComponent: Column {
+                            width: eqPage.width; spacing: Style.space(14)
+                            Effect { controlKey: "eq"; label: "Equalizer" }
+                            Caption { width: parent.width; wrapMode: Text.WordWrap; text: "Runs on the device’s own processor, so it shapes the mic for every app and stays on after this panel closes. Bands set in Wave Link are kept." }
                             Divider {}
-                            EqBand { number: 2 }
+                            Column {
+                                width: parent.width; spacing: Style.space(14)
+                                opacity: root.value("eq") ? 1 : 0.7
+                                EqBand { number: 1 }
+                                Divider {}
+                                EqBand { number: 2 }
+                                Divider {}
+                                EqBand { number: 3 }
+                                Divider {}
+                                EqBand { number: 4 }
+                            }
                             Divider {}
-                            EqBand { number: 3 }
-                            Divider {}
-                            EqBand { number: 4 }
+                            Action { objectName: "eqBack"; text: "← Back to controls"; foreground: Commons.Color.accent; onClicked: root.back(); Component.onCompleted: root.eqBackButton = this }
                         }
-                        Divider {}
-                        Action { id: eqBackButton; text: "← Back to controls"; foreground: Commons.Color.accent; onClicked: root.back() }
                     }
                     Row {
                         visible: !root.disconnected
