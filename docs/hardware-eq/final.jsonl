@@ -1,0 +1,12 @@
+{"binary": "old", "intervalMs": 500, "seconds": 30.0, "cpu_pct": 0.0, "cpu_us_per_s": 237.8, "vcs_per_s": 8.96, "nvcs": 0, "rss_kib": 3380, "threads": 2, "stdout_bytes_per_s": 298.3, "lines_per_s": 1.0}
+{"binary": "new", "intervalMs": 500, "seconds": 30.0, "cpu_pct": 0.033, "cpu_us_per_s": 238.1, "vcs_per_s": 8.96, "nvcs": 0, "rss_kib": 3472, "threads": 2, "stdout_bytes_per_s": 44.0, "lines_per_s": 0.97}
+{"binary": "old", "intervalMs": 50, "seconds": 30.0, "cpu_pct": 0.167, "cpu_us_per_s": 1598.3, "vcs_per_s": 80.57, "nvcs": 2, "rss_kib": 3380, "threads": 2, "stdout_bytes_per_s": 298.4, "lines_per_s": 1.0}
+{"binary": "new", "intervalMs": 50, "seconds": 30.0, "cpu_pct": 0.167, "cpu_us_per_s": 1513.0, "vcs_per_s": 80.57, "nvcs": 0, "rss_kib": 3512, "threads": 2, "stdout_bytes_per_s": 46.9, "lines_per_s": 1.03}
+{"binary": "old", "intervalMs": 500, "seconds": 30.0, "cpu_pct": 0.0, "cpu_us_per_s": 224.2, "vcs_per_s": 8.96, "nvcs": 0, "rss_kib": 3376, "threads": 2, "stdout_bytes_per_s": 298.3, "lines_per_s": 1.0}
+{"binary": "new", "intervalMs": 500, "seconds": 30.0, "cpu_pct": 0.0, "cpu_us_per_s": 238.1, "vcs_per_s": 8.93, "nvcs": 0, "rss_kib": 3440, "threads": 2, "stdout_bytes_per_s": 45.4, "lines_per_s": 1.0}
+{"binary": "old", "intervalMs": 50, "seconds": 30.0, "cpu_pct": 0.133, "cpu_us_per_s": 1682.3, "vcs_per_s": 80.58, "nvcs": 0, "rss_kib": 3420, "threads": 2, "stdout_bytes_per_s": 298.4, "lines_per_s": 1.0}
+{"binary": "new", "intervalMs": 50, "seconds": 30.0, "cpu_pct": 0.133, "cpu_us_per_s": 1491.6, "vcs_per_s": 80.54, "nvcs": 1, "rss_kib": 3452, "threads": 2, "stdout_bytes_per_s": 46.9, "lines_per_s": 1.03}
+{"binary": "old", "intervalMs": 500, "seconds": 30.0, "cpu_pct": 0.0, "cpu_us_per_s": 229.5, "vcs_per_s": 8.96, "nvcs": 0, "rss_kib": 3384, "threads": 2, "stdout_bytes_per_s": 288.4, "lines_per_s": 0.97}
+{"binary": "new", "intervalMs": 500, "seconds": 30.0, "cpu_pct": 0.033, "cpu_us_per_s": 205.8, "vcs_per_s": 8.96, "nvcs": 0, "rss_kib": 3440, "threads": 2, "stdout_bytes_per_s": 45.4, "lines_per_s": 1.0}
+{"binary": "old", "intervalMs": 50, "seconds": 30.0, "cpu_pct": 0.167, "cpu_us_per_s": 1730.2, "vcs_per_s": 80.57, "nvcs": 2, "rss_kib": 3376, "threads": 2, "stdout_bytes_per_s": 298.4, "lines_per_s": 1.0}
+{"binary": "new", "intervalMs": 50, "seconds": 30.0, "cpu_pct": 0.133, "cpu_us_per_s": 1410.6, "vcs_per_s": 80.51, "nvcs": 0, "rss_kib": 3424, "threads": 2, "stdout_bytes_per_s": 45.5, "lines_per_s": 1.0}

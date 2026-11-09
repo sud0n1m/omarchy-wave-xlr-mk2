@@ -36,6 +36,18 @@ assert.equal(ctx.state,original,'heartbeat must preserve state identity');
 assert.equal(ctx.highlights,highlights,'heartbeat must not invalidate highlights');
 assert.equal(ctx.watchdogCount,1,'connected heartbeat must reset watchdog');
 ctx.acceptState({...ctx.state,gain:45});
+{
+  const before=ctx.state, beforeHighlights=ctx.highlights, beforeWatchdog=ctx.watchdogCount, seq=ctx.sequence;
+  ctx.lastSeen=0;
+  ctx.receive(JSON.stringify({type:'state',seq:seq+1,sampledAtMs:1}));
+  assert.equal(ctx.state,before,'liveness-only heartbeat keeps state identity');
+  assert.equal(ctx.highlights,beforeHighlights,'liveness-only heartbeat keeps highlights');
+  assert.equal(ctx.watchdogCount,beforeWatchdog+1,'liveness-only heartbeat resets watchdog');
+  assert.ok(ctx.lastSeen>0,'liveness-only heartbeat refreshes liveness');
+  assert.equal(ctx.error,'','liveness-only heartbeat is not an unreadable response');
+  ctx.receive(JSON.stringify({type:'state',seq:seq+1,sampledAtMs:1}));
+  assert.equal(ctx.watchdogCount,beforeWatchdog+1,'replayed heartbeat is ignored');
+}
 assert.equal(ctx.state.gain,45,'changed device values must still be delivered');
 ctx.transportError='Device worker stopped'; ctx.error='Old error';
 const absent={connected:false,usb:false,stale:false,present:false};

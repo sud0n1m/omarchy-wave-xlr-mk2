@@ -19,6 +19,8 @@ pub struct Worker<P, C> {
     sampled_at: u64,
     seq: u64,
     device: Option<Box<dyn Device>>,
+    /// Raw blocks behind the current state; an identical read skips decoding.
+    decoded: Option<device::Blocks>,
     fallback: bool,
     attached: Option<bool>,
     platform: P,
@@ -38,6 +40,7 @@ impl<P: Platform, C: Fn() -> u64> Worker<P, C> {
             sampled_at: 0,
             seq: 0,
             device: None,
+            decoded: None,
             fallback: false,
             attached: None,
             platform,
@@ -51,21 +54,40 @@ impl<P: Platform, C: Fn() -> u64> Worker<P, C> {
     pub fn take_events(&mut self) -> Vec<Value> {
         std::mem::take(&mut self.events)
     }
+    /// Emit a state frame. Full state goes out when it changed or a command
+    /// asked for it; an unchanged heartbeat is a small liveness-only frame.
+    fn emit(&mut self, full: bool, now: u64) {
+        self.seq += 1;
+        let mut event = json!({"type":"state","seq":self.seq,"sampledAtMs":self.sampled_at});
+        if full {
+            event["state"] = self.state.clone();
+        }
+        self.events.push(event);
+        self.last_emit = Some(now);
+    }
+    fn heartbeat_due(&self, now: u64) -> bool {
+        self.attached != Some(false) && self.last_emit.is_none_or(|t| now.saturating_sub(t) >= 1000)
+    }
     fn publish(&mut self, state: Value, force: bool, sampled: bool) {
         let now = self.now();
         if sampled {
             self.sampled_at = now;
         }
+        self.decoded = None;
         let changed = state != self.state;
         self.state = state;
-        if changed
-            || force
-            || (self.attached != Some(false)
-                && self.last_emit.is_none_or(|t| now.saturating_sub(t) >= 1000))
-        {
-            self.seq += 1;
-            self.events.push(json!({"type":"state","state":self.state,"seq":self.seq,"sampledAtMs":self.sampled_at}));
-            self.last_emit = Some(now);
+        if changed || force || self.heartbeat_due(now) {
+            self.emit(changed || force, now);
+        }
+    }
+    /// The state is unchanged: no clone, comparison or full serialization.
+    fn keep(&mut self, force: bool, sampled: bool) {
+        let now = self.now();
+        if sampled {
+            self.sampled_at = now;
+        }
+        if force || self.heartbeat_due(now) {
+            self.emit(force, now);
         }
     }
     fn failed(&mut self, error: String) {
@@ -158,9 +180,13 @@ impl<P: Platform, C: Fn() -> u64> Worker<P, C> {
             }
         }
         let read = if let Some(device) = self.device.as_mut() {
-            Some(device.read().and_then(|b| device::decode(&b)))
+            Some(match device.read() {
+                Ok(blocks) if self.decoded.as_ref() == Some(&blocks) => Ok(None),
+                Ok(blocks) => device::decode(&blocks).map(|state| Some((state, Some(blocks)))),
+                Err(error) => Err(error),
+            })
         } else if self.fallback && self.platform.present() {
-            Some(self.platform.alsa(None))
+            Some(self.platform.alsa(None).map(|state| Some((state, None))))
         } else {
             if self.state["connected"] == true {
                 self.failed("Wave XLR MK.2 disconnected".into());
@@ -168,16 +194,18 @@ impl<P: Platform, C: Fn() -> u64> Worker<P, C> {
             None
         };
         match read {
-            Some(Ok(mut state)) => {
+            Some(Ok(Some((mut state, blocks)))) => {
                 if self.device.is_some() {
                     self.backoff = 250;
                 }
                 state["stale"] = false.into();
                 state["present"] = true.into();
                 self.publish(state, force, true);
+                self.decoded = blocks;
             }
+            Some(Ok(None)) => self.keep(force, true),
             Some(Err(error)) => self.failed(error),
-            None => self.publish(self.state.clone(), force, false),
+            None => self.keep(force, false),
         }
         self.next_poll = if self.device.is_some() {
             self.now() + self.interval
@@ -193,11 +221,8 @@ impl<P: Platform, C: Fn() -> u64> Worker<P, C> {
         }
         if self.now() >= self.next_poll {
             self.sample(false);
-        } else if self
-            .last_emit
-            .is_none_or(|t| self.now().saturating_sub(t) >= 1000)
-        {
-            self.publish(self.state.clone(), false, false);
+        } else {
+            self.keep(false, false);
         }
     }
     pub fn wait_ms(&self) -> Option<u64> {

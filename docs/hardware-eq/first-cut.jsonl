@@ -1,0 +1,8 @@
+{"binary": "old", "intervalMs": 500, "seconds": 30.0, "cpu_pct": 0.0, "cpu_us_per_s": 206.9, "vcs_per_s": 9.0, "nvcs": 0, "rss_kib": 3428, "threads": 2, "stdout_bytes_per_s": 288.5, "lines_per_s": 0.97}
+{"binary": "new", "intervalMs": 500, "seconds": 30.0, "cpu_pct": 0.0, "cpu_us_per_s": 356.8, "vcs_per_s": 8.96, "nvcs": 0, "rss_kib": 4080, "threads": 2, "stdout_bytes_per_s": 575.5, "lines_per_s": 0.97}
+{"binary": "old", "intervalMs": 50, "seconds": 30.0, "cpu_pct": 0.2, "cpu_us_per_s": 1834.0, "vcs_per_s": 80.48, "nvcs": 3, "rss_kib": 3456, "threads": 2, "stdout_bytes_per_s": 308.3, "lines_per_s": 1.03}
+{"binary": "new", "intervalMs": 50, "seconds": 30.0, "cpu_pct": 0.233, "cpu_us_per_s": 2146.2, "vcs_per_s": 80.58, "nvcs": 1, "rss_kib": 4040, "threads": 2, "stdout_bytes_per_s": 615.1, "lines_per_s": 1.03}
+{"binary": "old", "intervalMs": 500, "seconds": 30.0, "cpu_pct": 0.0, "cpu_us_per_s": 200.6, "vcs_per_s": 8.63, "nvcs": 0, "rss_kib": 3412, "threads": 2, "stdout_bytes_per_s": 298.3, "lines_per_s": 1.0}
+{"binary": "new", "intervalMs": 500, "seconds": 30.0, "cpu_pct": 0.033, "cpu_us_per_s": 309.0, "vcs_per_s": 8.96, "nvcs": 1, "rss_kib": 4112, "threads": 2, "stdout_bytes_per_s": 615.1, "lines_per_s": 1.03}
+{"binary": "old", "intervalMs": 50, "seconds": 30.0, "cpu_pct": 0.167, "cpu_us_per_s": 1896.4, "vcs_per_s": 80.54, "nvcs": 3, "rss_kib": 3432, "threads": 2, "stdout_bytes_per_s": 298.4, "lines_per_s": 1.0}
+{"binary": "new", "intervalMs": 50, "seconds": 30.0, "cpu_pct": 0.2, "cpu_us_per_s": 2204.0, "vcs_per_s": 80.58, "nvcs": 0, "rss_kib": 4044, "threads": 2, "stdout_bytes_per_s": 595.3, "lines_per_s": 1.0}

@@ -46,7 +46,9 @@ switches, borders, sizing) intentionally follow the shell rather than the mockup
 A single persistent Rust worker owns the vendor USB interface. The panel uses
 newline-delimited JSON on stdin/stdout, rather than spawning a process per poll.
 It reads every 50 ms while open and 500 ms while closed, sending changed state
-plus a liveness frame at least once per second while hardware is present. Incoming
+plus a liveness frame at least once per second while hardware is present. An
+unchanged heartbeat carries no state, and an unchanged USB read is not decoded
+again ([v1.3.0 measurements](docs/hardware-eq-efficiency.md)). Incoming
 reads never disable sliders. Local drags display immediately, coalesce writes
 at 50 ms, and flush the final release. Pending IDs protect newer edits from older
 acknowledgments. Device-side changes briefly highlight the affected number.

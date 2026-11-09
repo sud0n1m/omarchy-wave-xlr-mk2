@@ -420,7 +420,11 @@ fn disconnected_backoff_keeps_liveness_without_extra_device_probes() {
         worker.tick();
         let events = worker.take_events();
         assert_eq!(events.len(), 1);
-        assert_eq!(events[0]["state"]["stale"], true);
+        assert!(
+            events[0].get("state").is_none(),
+            "unchanged heartbeat is liveness-only"
+        );
+        assert_eq!(worker.state["stale"], true);
         assert_eq!(events[0]["sampledAtMs"], 0);
         assert_eq!(worker.wait_ms(), Some(1000));
         assert_eq!(shared.borrow().opens, 1);
@@ -501,7 +505,12 @@ fn fallback_polls_slowly_and_does_not_flicker_during_permission_retries() {
     worker.tick();
     let events = worker.take_events();
     assert!(!events.is_empty());
-    assert!(events.iter().all(|e| e["state"]["connected"] == true));
+    assert!(
+        events
+            .iter()
+            .all(|e| e.get("state").is_none_or(|s| s["connected"] == true))
+    );
+    assert_eq!(worker.state["connected"], true);
     assert_eq!(shared.borrow().opens, 2);
     assert_eq!(shared.borrow().alsa_calls.len(), 2);
     assert_eq!(
@@ -902,4 +911,60 @@ fn hardware_eq_is_refused_without_writes_on_old_firmware_or_alsa() {
     let result = command(&mut worker, json!({"id":1,"op":"set","key":"eq","value":1}));
     assert_eq!(result["ok"], false);
     assert!(shared.borrow().alsa_calls.iter().all(Option::is_none));
+}
+
+#[test]
+fn unchanged_reads_skip_decoding_and_heartbeats_omit_state() {
+    let (mut worker, now, shared) = fixture();
+    give_eq(&mut shared.borrow_mut());
+    worker.sample(true);
+    let first = worker.take_events();
+    assert_eq!(first.len(), 1);
+    assert_eq!(first[0]["state"]["eq4Freq"], 10237, "first frame is full");
+    let seq = first[0]["seq"].as_u64().unwrap();
+    for instant in [1500, 1999] {
+        now.set(instant);
+        worker.tick();
+        assert!(
+            worker.take_events().is_empty(),
+            "unchanged sample is silent"
+        );
+    }
+    now.set(2000);
+    worker.tick();
+    let beat = worker.take_events();
+    assert_eq!(beat.len(), 1);
+    assert_eq!(beat[0]["seq"], seq + 1);
+    assert_eq!(
+        beat[0]["sampledAtMs"], 2000,
+        "liveness still reports the fresh read"
+    );
+    assert!(beat[0].get("state").is_none(), "heartbeat carries no state");
+    // A device-side change after cached reads is still delivered in full.
+    shared.borrow_mut().blocks.settings[0] = 50;
+    now.set(2500);
+    worker.tick();
+    let changed = worker.take_events();
+    assert_eq!(changed.len(), 1);
+    assert_eq!(changed[0]["state"]["gain"], 50);
+    assert_eq!(changed[0]["state"]["eq4Freq"], 10237);
+    // Explicit refresh always returns the full state, even if unchanged.
+    let result = command(&mut worker, json!({"id":1,"op":"refresh"}));
+    assert_eq!(result["state"]["gain"], 50);
+    let refreshed: Vec<_> = worker.take_events();
+    assert!(refreshed.is_empty());
+    worker.command(json!({"id":2,"op":"refresh"}));
+    let events = worker.take_events();
+    assert_eq!(events[0]["state"]["gain"], 50, "forced frame is full");
+    // A failure clears the cache: identical bytes after reconnect are decoded again.
+    shared.borrow_mut().read_error = true;
+    now.set(3000);
+    worker.tick();
+    assert_eq!(worker.state["stale"], true);
+    shared.borrow_mut().read_error = false;
+    now.set(3300);
+    worker.tick();
+    let back = worker.take_events();
+    assert_eq!(back.last().unwrap()["state"]["stale"], false);
+    assert_eq!(back.last().unwrap()["state"]["gain"], 50);
 }
