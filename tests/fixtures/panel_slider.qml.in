@@ -1,5 +1,6 @@
 import Quickshell
 import QtQuick
+import QtQuick.Shapes
 import QtTest
 import qs.Ui
 import qs.Commons
@@ -11,6 +12,8 @@ FloatingWindow {
  property var bar: null
  property var state: ({headphones:-20})
  property var highlights: ({})
+ property var pending: ({})
+ property int eqBand: 1
  property bool opened: true
  property bool available: true
  property string focusedControl: ""
@@ -20,13 +23,16 @@ FloatingWindow {
  function supported(k) { return available }
  function ensureVisible(i) {}
  function setDragging(k,d) {}
- function edit(k,v,final) { edits++; calls.push({value:v,final:final}); var n={}; n[k]=v; state=n }
+ function edit(k,v,final) { edits++; calls.push({key:k,value:v,final:final}); var n={}; for (var o in state) n[o]=state[o]; n[k]=v; state=n }
+ function flush() {}
+ readonly property var eqState: ({eq:true,eq1On:true,eq1Type:0,eq1Freq:60,eq1Gain:0,eq1Q:0.698,eq2On:true,eq2Type:1,eq2Freq:227,eq2Gain:3.25,eq2Q:1,eq3On:true,eq3Type:2,eq3Freq:860,eq3Gain:-3,eq3Q:0.604,eq4On:true,eq4Type:2,eq4Freq:10237,eq4Gain:1.75,eq4Q:0.422})
 
 @@FUNCTIONS@@
 @@COMPONENTS@@
  Column {
   SliderField { id: field; width: 400; controlKey: "headphones"; minimum: -60; maximum: 0; increment: .25 }
   SliderField { id: freq; width: 400; controlKey: "eq1Freq"; minimum: 20; maximum: 20000; increment: 1; logarithmic: true; logStep: Math.log10(2) / 12; display: root.formatHz(current) }
+  EqGraph { id: graph; width: 350; height: 160; editable: true }
   SliderField { id: q; width: 400; controlKey: "eq1Q"; minimum: 0.1; maximum: 10; increment: 0.01; logarithmic: true; logStep: 1 / 64; quantize: "q" }
  }
  TestCase {
@@ -45,6 +51,10 @@ FloatingWindow {
   function test_logFrequencyWheelStepsTwelfthOctave() { root.state=({eq1Freq:1000}); wait(20); var item=findChild(freq,"eq1Freq"); compare(item.value,3); mouseWheel(item,item.width/2,item.height/2,0,120); compare(root.state.eq1Freq,1059); compare(root.edits,1) }
   function test_logQWheelStepsOneDeviceByte() { root.state=({eq1Q:0.698}); wait(20); var item=findChild(q,"eq1Q"); mouseWheel(item,item.width/2,item.height/2,0,120); compare(root.state.eq1Q,0.723); mouseWheel(item,item.width/2,item.height/2,0,-120); mouseWheel(item,item.width/2,item.height/2,0,-120); compare(root.state.eq1Q,0.673); compare(root.edits,3) }
   function test_logDragReachesBothEnds() { root.state=({eq1Freq:1000}); wait(20); var item=findChild(freq,"eq1Freq"); mousePress(item,item.width/2,item.height/2); mouseMove(item,item.width+40,item.height/2,20); mouseRelease(item,item.width+40,item.height/2); compare(root.state.eq1Freq,20000); mousePress(item,item.width/2,item.height/2); mouseMove(item,-40,item.height/2,20); mouseRelease(item,-40,item.height/2); compare(root.state.eq1Freq,20); verify(root.calls[root.calls.length-1].final) }
+  function point(n) { var b=root.eqState; var gain=root.eqHasGain(b["eq"+n+"Type"]) ? b["eq"+n+"Gain"] : 0; return {x:root.eqX(b["eq"+n+"Freq"],graph.width), y:root.eqY(gain,graph.height,graph.range)} }
+  function test_graphDragMovesFrequencyAndGain() { root.state=root.eqState; wait(20); var p=point(3); mousePress(graph,p.x,p.y); compare(root.eqBand,3); var x=root.eqX(2000,graph.width), y=root.eqY(6,graph.height,graph.range); mouseMove(graph,(p.x+x)/2,(p.y+y)/2,20); mouseMove(graph,x,y,20); mouseRelease(graph,x,y); verify(Math.abs(root.state.eq3Freq-2000)/2000<0.025); compare(root.state.eq3Gain,6); var last=root.calls.slice(-2); verify(last[0].final && last[1].final); verify(root.calls.some(function(c){return !c.final})); compare(graph.dragBand,0) }
+  function test_graphGainlessAndEmptyPresses() { root.state=root.eqState; wait(20); mousePress(graph,300,150); mouseRelease(graph,300,150); compare(root.edits,0); var p=point(1); mousePress(graph,p.x,p.y); mouseMove(graph,p.x+30,p.y-50,20); mouseRelease(graph,p.x+30,p.y-50); compare(root.eqBand,1); verify(root.state.eq1Freq>60); compare(root.state.eq1Gain,0); verify(root.calls.every(function(c){return c.key==="eq1Freq"})) }
+  function test_graphWheelStepsSelectedQ() { root.state=root.eqState; root.eqBand=3; wait(20); mouseWheel(graph,10,10,0,120); compare(root.state.eq3Q,root.qSnap(Math.pow(10,Math.log10(0.604)+1/64))); verify(root.state.eq3Q>0.604); compare(root.edits,1) }
   function test_closeCancelsDrag() { var item=slider(); mousePress(item,101,item.height/2); verify(item.dragging); root.opened=false; compare(item.dragging,false); mouseRelease(item,101,item.height/2) }
  }
 }

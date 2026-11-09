@@ -1,5 +1,6 @@
 import QtQuick
 import QtQuick.Controls as Controls
+import QtQuick.Shapes
 import Quickshell
 import Quickshell.Io
 import qs.Commons
@@ -30,7 +31,7 @@ Panel {
     property var queued: ({})
     property var dragging: ({})
     property var highlights: ({})
-    property Item eqBackButton: null
+    property int eqBand: 1 // The band the EQ page's editor and highlighted graph point show.
     readonly property color fg: Commons.Color.popups.text
     readonly property string family: Style.font.family
     readonly property bool disconnected: state.present === false
@@ -82,9 +83,64 @@ Panel {
         if (reason === "unsupportedBlock") return "The device’s EQ settings weren’t recognized, so the EQ is left untouched."
         return "Firmware version couldn’t be read; hardware EQ is unavailable."
     }
+    // The EQ settings as one string, so the curves recompute only when a band changes,
+    // not on every state update. Empty when the device has no usable EQ.
+    function eqSignature() {
+        if (state.eq === undefined) return ""
+        var s = value("eq") ? "1" : "0"
+        for (var n = 1; n <= 4; n++) {
+            var p = "eq" + n
+            s += "|" + [value(p + "On") ? 1 : 0, value(p + "Type"), value(p + "Freq"), value(p + "Gain"), value(p + "Q")].join(",")
+        }
+        return s
+    }
+    function eqBands(signature) {
+        return signature === "" ? [] : signature.split("|").slice(1).map(function(part) {
+            var f = part.split(",").map(Number)
+            return {on:f[0] === 1, type:f[1], freq:f[2], gain:f[3], q:f[4]}
+        })
+    }
+    // RBJ audio-EQ-cookbook biquads at the device's 48 kHz rate: [b0, b1, b2, a0, a1, a2].
+    function eqBiquad(band) {
+        var A = Math.pow(10, band.gain / 40), w = 2 * Math.PI * band.freq / 48000
+        var c = Math.cos(w), s = Math.sin(w), al = s / (2 * band.q), sq = 2 * Math.sqrt(A) * al
+        switch (band.type) {
+        case 0: return [(1 + c) / 2, -(1 + c), (1 + c) / 2, 1 + al, -2 * c, 1 - al]
+        case 1: return [A * ((A + 1) - (A - 1) * c + sq), 2 * A * ((A - 1) - (A + 1) * c), A * ((A + 1) - (A - 1) * c - sq),
+                        (A + 1) + (A - 1) * c + sq, -2 * ((A - 1) + (A + 1) * c), (A + 1) + (A - 1) * c - sq]
+        case 3: return [1, -2 * c, 1, 1 + al, -2 * c, 1 - al]
+        case 4: return [A * ((A + 1) + (A - 1) * c + sq), -2 * A * ((A - 1) + (A + 1) * c), A * ((A + 1) + (A - 1) * c - sq),
+                        (A + 1) - (A - 1) * c + sq, 2 * ((A - 1) - (A + 1) * c), (A + 1) - (A - 1) * c - sq]
+        case 5: return [(1 - c) / 2, 1 - c, (1 - c) / 2, 1 + al, -2 * c, 1 - al]
+        default: return [1 + al * A, -2 * c, 1 - al * A, 1 + al / A, -2 * c, 1 - al / A]
+        }
+    }
+    function eqDb(freq, filters) {
+        var w = 2 * Math.PI * freq / 48000, c1 = Math.cos(w), s1 = Math.sin(w), c2 = Math.cos(2 * w), s2 = Math.sin(2 * w), db = 0
+        for (var i = 0; i < filters.length; i++) {
+            var k = filters[i]
+            var nr = k[0] + k[1] * c1 + k[2] * c2, ni = k[1] * s1 + k[2] * s2
+            var dr = k[3] + k[4] * c1 + k[5] * c2, di = k[4] * s1 + k[5] * s2
+            db += 10 * Math.log10((nr * nr + ni * ni) / (dr * dr + di * di))
+        }
+        return db
+    }
+    function eqX(freq, width) { return Math.log10(freq / 20) / 3 * width }
+    function eqY(db, height, range) { return height / 2 - Math.max(-range, Math.min(range, db)) / range * height / 2 }
+    // The summed response of the enabled bands as polyline points; `closed` adds the 0 dB baseline for a fill.
+    function eqCurve(signature, width, height, range, closed) {
+        var filters = eqBands(signature).filter(function(b) { return b.on }).map(eqBiquad), points = []
+        if (signature === "" || width <= 0) return points
+        for (var i = 0; i <= 96; i++) {
+            var f = 20 * Math.pow(1000, i / 96)
+            points.push(Qt.point(eqX(f, width), eqY(eqDb(f, filters), height, range)))
+        }
+        if (closed) points.push(Qt.point(width, height / 2), Qt.point(0, height / 2), points[0])
+        return points
+    }
     function openPage(name) {
         page = name; scroll.contentY = 0
-        Qt.callLater(function() { var target = name === "eq" ? eqBackButton : backButton; if (target) target.forceActiveFocus() })
+        Qt.callLater(function() { backButton.forceActiveFocus() })
     }
     function setDragging(key, active) { var d = copy(dragging); d[key] = active; dragging = d }
     function toggleSetting(key) { edit(key, value(key) ? 0 : 1, true) }
@@ -161,11 +217,12 @@ Panel {
         phantomArmed = false
         if (from === "eq") { dragging = ({}); flush() } // The EQ page's sliders are destroyed on leaving.
         page = "controls"
-        Qt.callLater(function() { (from === "eq" ? eqButton : hardwareButton).forceActiveFocus() })
+        Qt.callLater(function() { (from === "eq" ? eqButton : hardwareButton).focusAction() })
     }
     Component.onCompleted: worker.running = true
     onOpenedChanged: {
         phantomArmed = false
+        if (opened) scroll.contentY = 0
         if (!opened) { dragging = ({}); flush(); highlights = ({}); highlightExpiry.stop() }
         send("poll", {intervalMs:opened ? 50 : 500})
     }
@@ -250,49 +307,50 @@ Panel {
         property bool editable: true
         readonly property bool live: root.supported(controlKey) && editable
         readonly property real current: root.value(controlKey) !== undefined ? Number(root.value(controlKey)) : minimum
-        width: parent.width; spacing: Style.space(3)
-        Row {
-            width: parent.width
-            Label { width: parent.width - numeric.width; text: field.label; anchors.verticalCenter: parent.verticalCenter }
+        readonly property string valueText: root.value(controlKey) === undefined ? "—" : display !== "" ? display : controlKey === "balance" ? (current === 100 ? "Centered" : current < 100 ? "Mic +" + Math.round(100-current) : "Computer +" + Math.round(current-100)) : String(Math.round(current * 100) / 100) + (hero ? "" : unit)
+        width: parent.width; spacing: Style.space(hero ? 6 : 3)
+        Item {
+            width: parent.width; height: Math.max(name.implicitHeight, numeric.implicitHeight)
+            Label { id: name; anchors.left: parent.left; anchors.baseline: numeric.baseline; text: field.label; opacity: field.hero ? 0.7 : 1 }
             Label {
                 id: numeric
-                text: root.value(field.controlKey) === undefined ? "—" : field.display !== "" ? field.display : field.controlKey === "balance" ? (field.current === 100 ? "Centered" : field.current < 100 ? "Mic +" + Math.round(100-field.current) : "Computer +" + Math.round(field.current-100)) : String(Math.round(field.current * 100) / 100) + field.unit
+                anchors.right: unitLabel.visible ? unitLabel.left : parent.right; anchors.rightMargin: unitLabel.visible ? Style.space(3) : 0
+                anchors.verticalCenter: parent.verticalCenter
+                text: field.valueText
                 font.pixelSize: field.hero ? Style.font.displayLarge : Style.font.body
+                font.weight: field.hero ? Font.Light : Font.Normal
+                opacity: field.hero ? 1 : 0.8
                 color: root.highlights[field.controlKey] ? Commons.Color.accent : root.fg
             }
+            Label { id: unitLabel; visible: field.hero && field.valueText !== "—"; anchors.right: parent.right; anchors.baseline: numeric.baseline; text: field.unit.trim(); opacity: 0.7 }
         }
-        Row {
-            width: parent.width; spacing: Style.space(6)
-            Action { visible: field.hero; width: Style.space(28); text: "−"; enabled: field.live; onClicked: field.adjust(-1, false) }
-            PanelSlider {
-                id: slider
-                objectName: field.controlKey
-                onActiveFocusChanged: if (activeFocus) { root.focusedControl = field.controlKey; root.ensureVisible(field) }
-                width: parent.width - (field.hero ? Style.space(68) : 0)
-                bar: root.bar
-                enabled: field.live
-                opacity: enabled ? 1 : 0.4
-                activeFocusOnTab: true
-                minimum: field.toSlider(field.minimum); maximum: field.toSlider(field.maximum)
-                step: field.logarithmic ? field.logStep : field.increment
-                value: field.toSlider(field.current)
-                fillColor: Commons.Color.accent; knobColor: root.fg
-                trackColor: Util.alpha(root.fg, 0.18)
-                tickCount: field.controlKey === "balance" ? 3 : 0
-                onDraggingChanged: { root.setDragging(field.controlKey, dragging); if (dragging) forceActiveFocus() }
-                onMoved: function(v) { root.edit(field.controlKey, field.snap(field.fromSlider(v)), false) }
-                onReleased: function(v) { root.edit(field.controlKey, field.snap(field.fromSlider(v)), true) }
-                Keys.onLeftPressed: function(e) { field.adjust(-1, true); e.accepted = true }
-                Keys.onRightPressed: function(e) { field.adjust(1, true); e.accepted = true }
-                Rectangle { anchors.fill: parent; color: "transparent"; border.color: Commons.Color.accent; visible: slider.activeFocus; radius: Style.cornerRadius }
-                MouseArea {
-                    anchors.fill: parent
-                    acceptedButtons: Qt.NoButton
-                    enabled: slider.enabled
-                    onWheel: function(e) { field.adjust(e.angleDelta.y > 0 ? 1 : -1, !!(e.modifiers & Qt.ShiftModifier)); e.accepted = true }
-                }
+        PanelSlider {
+            id: slider
+            objectName: field.controlKey
+            onActiveFocusChanged: if (activeFocus) { root.focusedControl = field.controlKey; root.ensureVisible(field) }
+            width: parent.width
+            bar: root.bar
+            enabled: field.live
+            opacity: enabled ? 1 : 0.4
+            activeFocusOnTab: true
+            minimum: field.toSlider(field.minimum); maximum: field.toSlider(field.maximum)
+            step: field.logarithmic ? field.logStep : field.increment
+            value: field.toSlider(field.current)
+            fillColor: Commons.Color.accent; knobColor: root.fg
+            trackColor: Util.alpha(root.fg, 0.18)
+            tickCount: field.controlKey === "balance" ? 3 : 0
+            onDraggingChanged: { root.setDragging(field.controlKey, dragging); if (dragging) forceActiveFocus() }
+            onMoved: function(v) { root.edit(field.controlKey, field.snap(field.fromSlider(v)), false) }
+            onReleased: function(v) { root.edit(field.controlKey, field.snap(field.fromSlider(v)), true) }
+            Keys.onLeftPressed: function(e) { field.adjust(-1, true); e.accepted = true }
+            Keys.onRightPressed: function(e) { field.adjust(1, true); e.accepted = true }
+            Rectangle { anchors.fill: parent; color: "transparent"; border.color: Commons.Color.accent; visible: slider.activeFocus; radius: Style.cornerRadius }
+            MouseArea {
+                anchors.fill: parent
+                acceptedButtons: Qt.NoButton
+                enabled: slider.enabled
+                onWheel: function(e) { field.adjust(e.angleDelta.y > 0 ? 1 : -1, !!(e.modifiers & Qt.ShiftModifier)); e.accepted = true }
             }
-            Action { visible: field.hero; width: Style.space(28); text: "+"; enabled: field.live; onClicked: field.adjust(1, false) }
         }
         Row {
             width: parent.width; visible: field.leftCaption !== ""
@@ -321,22 +379,204 @@ Panel {
             root.edit(controlKey, snap(current + direction*(controlKey === "headphones" && !fine ? 1 : increment)), true)
         }
     }
+    // A full-width setting row: label, optional explanation, and a switch.
     component Effect: Item {
         id: effect
         property string controlKey
         property string label
-        width: parent.width; height: Style.space(34)
+        property string detail: ""
+        width: parent.width; height: Math.max(Style.space(34), effectText.implicitHeight + Style.space(16))
         Action {
             anchors.fill: parent; objectName: effect.controlKey; enabled: root.supported(effect.controlKey) && !root.pending[effect.controlKey]
             onClicked: root.toggleSetting(effect.controlKey)
             Accessible.name: effect.label + (root.value(effect.controlKey) ? " on" : " off")
         }
-        Label { text: effect.label; anchors.left: parent.left; anchors.verticalCenter: parent.verticalCenter }
-        Caption { anchors.right: switchView.left; anchors.rightMargin: Style.space(10); anchors.verticalCenter: parent.verticalCenter; text: root.pending[effect.controlKey] ? "…" : root.state[effect.controlKey] === undefined ? "—" : root.value(effect.controlKey) ? "On" : "Off" }
+        Column {
+            id: effectText; spacing: Style.space(2)
+            anchors.left: parent.left; anchors.right: effectSwitch.left; anchors.rightMargin: Style.space(12); anchors.verticalCenter: parent.verticalCenter
+            Label { width: parent.width; text: effect.label; elide: Text.ElideRight }
+            Caption { width: parent.width; visible: effect.detail !== ""; text: effect.detail; wrapMode: Text.WordWrap }
+        }
         ToggleSwitch {
-            id: switchView; anchors.right: parent.right; anchors.verticalCenter: parent.verticalCenter
-            checked: !!root.value(effect.controlKey); interactive: false; trackHeight: Style.space(18)
-            foreground: root.fg; accent: Commons.Color.accent
+            id: effectSwitch; anchors.right: parent.right; anchors.verticalCenter: parent.verticalCenter
+            checked: !!root.value(effect.controlKey); busy: !!root.pending[effect.controlKey]; interactive: false; cursorRing: false
+            trackHeight: Style.space(16); foreground: root.fg; accent: Commons.Color.accent
+            opacity: root.state[effect.controlKey] === undefined ? 0.4 : 1
+        }
+    }
+    // A half-width processing toggle: filled while on, outlined while off.
+    component Chip: Rectangle {
+        id: chip
+        property string controlKey
+        property string label
+        readonly property bool on: !!root.value(controlKey)
+        width: (parent.width - Style.space(8)) / 2; height: Style.space(36)
+        radius: Style.cornerRadius
+        color: on ? Util.alpha(root.fg, 0.08) : "transparent"
+        border.width: on ? 0 : Math.max(1, Style.space(1)); border.color: Util.alpha(root.fg, 0.16)
+        Action {
+            anchors.fill: parent; objectName: chip.controlKey; enabled: root.supported(chip.controlKey) && !root.pending[chip.controlKey]
+            onClicked: root.toggleSetting(chip.controlKey)
+            Accessible.name: chip.label + (chip.on ? " on" : " off")
+        }
+        Label {
+            anchors.left: parent.left; anchors.leftMargin: Style.space(10); anchors.right: chipSwitch.left; anchors.rightMargin: Style.space(6)
+            anchors.verticalCenter: parent.verticalCenter; text: chip.label; elide: Text.ElideRight; opacity: chip.on ? 1 : 0.7
+        }
+        ToggleSwitch {
+            id: chipSwitch; anchors.right: parent.right; anchors.rightMargin: Style.space(8); anchors.verticalCenter: parent.verticalCenter
+            checked: chip.on; busy: !!root.pending[chip.controlKey]; interactive: false; cursorRing: false
+            trackHeight: Style.space(14); foreground: root.fg; accent: Commons.Color.accent
+        }
+    }
+    // A link to a sub-page: title, one line of what is inside, an optional preview, a chevron.
+    component NavRow: Item {
+        id: nav
+        property string title
+        property string detail
+        property bool active: true
+        default property alias trailing: trailingSlot.data
+        signal activated()
+        function focusAction() { navAction.forceActiveFocus() }
+        width: parent.width; height: Math.max(Style.space(48), navText.implicitHeight + Style.space(20))
+        Action {
+            id: navAction; anchors.fill: parent; objectName: nav.title; enabled: nav.active
+            onClicked: nav.activated()
+            Accessible.name: nav.title + ". " + nav.detail
+        }
+        Column {
+            id: navText; spacing: Style.space(2)
+            anchors.left: parent.left; anchors.leftMargin: Style.space(2); anchors.right: trailingSlot.left; anchors.rightMargin: Style.space(10); anchors.verticalCenter: parent.verticalCenter
+            Label { width: parent.width; text: nav.title; font.weight: Font.Medium; elide: Text.ElideRight; opacity: nav.active ? 1 : 0.6 }
+            Caption { width: parent.width; text: nav.detail; wrapMode: Text.WordWrap }
+        }
+        Item {
+            id: trailingSlot; anchors.right: chevron.left; anchors.rightMargin: Style.space(10); anchors.verticalCenter: parent.verticalCenter
+            width: childrenRect.width; height: childrenRect.height
+        }
+        Label { id: chevron; anchors.right: parent.right; anchors.rightMargin: Style.space(4); anchors.verticalCenter: parent.verticalCenter; text: "›"; font.pixelSize: Style.font.heading; opacity: nav.active ? 0.6 : 0 }
+    }
+    // The summed EQ response. `editable` adds the grid, axis labels and draggable band points.
+    component EqGraph: Item {
+        id: graph
+        property bool editable: false
+        property real range: 12
+        readonly property string signature: root.eqSignature()
+        readonly property bool enabledEq: signature.charAt(0) === "1"
+        readonly property var bands: root.eqBands(signature)
+        property int dragBand: 0
+        Repeater {
+            model: graph.editable ? [100, 1000, 10000] : []
+            Rectangle { x: root.eqX(modelData, graph.width); width: 1; height: graph.height; color: root.fg; opacity: 0.12 }
+        }
+        Repeater {
+            model: graph.editable ? [-6, 0, 6] : [0]
+            Rectangle { y: root.eqY(modelData, graph.height, graph.range); width: graph.width; height: 1; color: root.fg; opacity: modelData === 0 ? 0.2 : 0.08 }
+        }
+        Shape {
+            anchors.fill: parent
+            preferredRendererType: Shape.CurveRenderer
+            opacity: graph.enabledEq ? 1 : 0.5
+            ShapePath {
+                strokeColor: "transparent"
+                fillColor: graph.editable && graph.enabledEq ? Util.alpha(Commons.Color.accent, 0.12) : "transparent"
+                PathPolyline { path: graph.editable ? root.eqCurve(graph.signature, graph.width, graph.height, graph.range, true) : [] }
+            }
+            ShapePath {
+                strokeColor: graph.enabledEq ? Commons.Color.accent : root.fg
+                strokeWidth: graph.editable ? 2 : 1.5
+                strokeStyle: graph.enabledEq ? ShapePath.SolidLine : ShapePath.DashLine
+                dashPattern: [3, 2]
+                fillColor: "transparent"; joinStyle: ShapePath.RoundJoin; capStyle: ShapePath.RoundCap
+                PathPolyline { path: root.eqCurve(graph.signature, graph.width, graph.height, graph.range, false) }
+            }
+        }
+        Repeater {
+            model: graph.editable ? graph.bands : []
+            Rectangle {
+                id: point
+                readonly property int number: index + 1
+                readonly property bool selected: number === root.eqBand
+                readonly property real size: Style.space(selected ? 18 : 16)
+                x: root.eqX(modelData.freq, graph.width) - size / 2
+                y: root.eqY(root.eqHasGain(modelData.type) ? modelData.gain : 0, graph.height, graph.range) - size / 2
+                width: size; height: size; radius: size / 2
+                color: selected ? Commons.Color.accent : Commons.Color.popups.background
+                border.width: selected ? 0 : Math.max(1, Style.space(1.5)); border.color: root.fg
+                opacity: modelData.on ? 1 : 0.45
+                Label {
+                    anchors.centerIn: parent; text: point.number; font.pixelSize: Style.font.caption; font.bold: true
+                    color: point.selected ? Commons.Color.popups.background : root.fg
+                }
+            }
+        }
+        MouseArea {
+            id: dragArea
+            anchors.fill: parent
+            enabled: graph.editable && root.supported("eq" + root.eqBand + "Freq")
+            preventStealing: true
+            function nearest(mx, my) {
+                var best = 0, bestDistance = Style.space(24)
+                for (var i = 0; i < graph.bands.length; i++) {
+                    var b = graph.bands[i]
+                    var dx = root.eqX(b.freq, graph.width) - mx, dy = root.eqY(root.eqHasGain(b.type) ? b.gain : 0, graph.height, graph.range) - my
+                    var distance = Math.sqrt(dx * dx + dy * dy)
+                    if (distance < bestDistance) { best = i + 1; bestDistance = distance }
+                }
+                return best
+            }
+            function apply(mx, my, final) {
+                var n = graph.dragBand, p = "eq" + n
+                var freq = Math.round(Math.max(20, Math.min(20000, 20 * Math.pow(1000, mx / graph.width))))
+                root.edit(p + "Freq", freq, final)
+                if (root.eqHasGain(graph.bands[n - 1].type)) {
+                    var gain = (graph.height / 2 - my) / (graph.height / 2) * graph.range
+                    root.edit(p + "Gain", Math.max(-12, Math.min(12, Math.round(gain * 4) / 4)), final)
+                }
+            }
+            function release() {
+                var p = "eq" + graph.dragBand
+                graph.dragBand = 0
+                root.setDragging(p + "Freq", false); root.setDragging(p + "Gain", false)
+            }
+            onPressed: function(e) {
+                var n = nearest(e.x, e.y)
+                if (!n) { e.accepted = false; return }
+                root.eqBand = n; graph.dragBand = n
+                root.setDragging("eq" + n + "Freq", true); root.setDragging("eq" + n + "Gain", true)
+            }
+            onPositionChanged: function(e) { if (graph.dragBand) apply(e.x, e.y, false) }
+            onReleased: function(e) { if (graph.dragBand) { apply(e.x, e.y, true); release() } }
+            onCanceled: if (graph.dragBand) { root.flush(); release() }
+            onWheel: function(e) {
+                var p = "eq" + root.eqBand, q = Number(root.value(p + "Q"))
+                var next = root.qSnap(Math.max(0.1, Math.min(10, Math.pow(10, Math.log10(q) + (e.angleDelta.y > 0 ? 1 : -1) / 64))))
+                root.edit(p + "Q", next, true); e.accepted = true
+            }
+        }
+        Connections {
+            target: root
+            function onOpenedChanged() { if (!root.opened && graph.dragBand) dragArea.release() }
+        }
+    }
+    component BandTab: Rectangle {
+        id: tab
+        property int number
+        readonly property bool selected: root.eqBand === number
+        readonly property string prefix: "eq" + number
+        width: (parent.width - 3 * Style.space(4)) / 4; height: Style.space(42)
+        radius: Style.cornerRadius
+        color: selected ? Util.alpha(root.fg, 0.1) : "transparent"
+        Action {
+            anchors.fill: parent; objectName: "eqBand" + tab.number
+            onClicked: root.eqBand = tab.number
+            Accessible.name: "Band " + tab.number + ", " + (root.eqTypes[root.value(tab.prefix + "Type")] || "") + (root.value(tab.prefix + "On") ? "" : ", off")
+        }
+        Column {
+            anchors.centerIn: parent; spacing: Style.space(1)
+            opacity: root.value(tab.prefix + "On") ? 1 : 0.5
+            Label { anchors.horizontalCenter: parent.horizontalCenter; text: tab.number; font.bold: true; color: tab.selected ? Commons.Color.accent : root.fg }
+            Caption { anchors.horizontalCenter: parent.horizontalCenter; text: root.eqTypes[root.value(tab.prefix + "Type")] || "—"; opacity: tab.selected ? 1 : 0.7 }
         }
     }
     component EqBand: Column {
@@ -345,14 +585,11 @@ Panel {
         readonly property string prefix: "eq" + number
         readonly property int type: root.value(prefix + "Type") !== undefined ? Number(root.value(prefix + "Type")) : 2
         readonly property bool active: !!root.value(prefix + "On")
-        width: parent.width; spacing: Style.space(8)
-        Effect { controlKey: band.prefix + "On"; label: "Band " + band.number }
-        Column {
-            width: parent.width; spacing: Style.space(8)
-            opacity: band.active ? 1 : 0.55
+        width: parent.width; spacing: Style.space(10)
+        Item {
+            width: parent.width; height: Style.space(34)
             Row {
-                width: parent.width; spacing: Style.space(6)
-                Label { width: parent.width - typePrev.width - typeName.width - typeNext.width - 3 * parent.spacing; text: "Filter"; anchors.verticalCenter: parent.verticalCenter }
+                anchors.left: parent.left; anchors.verticalCenter: parent.verticalCenter; spacing: Style.space(4)
                 Action {
                     id: typePrev; width: Style.space(28); text: "‹"; objectName: band.prefix + "TypePrev"
                     Accessible.name: "Previous filter type, band " + band.number
@@ -360,7 +597,7 @@ Panel {
                     onClicked: root.edit(band.prefix + "Type", (band.type + 5) % 6, true)
                 }
                 Label {
-                    id: typeName; width: Style.space(92); horizontalAlignment: Text.AlignHCenter; anchors.verticalCenter: parent.verticalCenter
+                    width: Style.space(84); horizontalAlignment: Text.AlignHCenter; anchors.verticalCenter: parent.verticalCenter
                     text: root.value(band.prefix + "Type") === undefined ? "—" : root.eqTypes[band.type] || "—"
                     color: root.highlights[band.prefix + "Type"] ? Commons.Color.accent : root.fg
                 }
@@ -371,17 +608,25 @@ Panel {
                     onClicked: root.edit(band.prefix + "Type", (band.type + 1) % 6, true)
                 }
             }
+            Effect { anchors.right: parent.right; width: Style.space(120); controlKey: band.prefix + "On"; label: "Band " + band.number }
+        }
+        Column {
+            width: parent.width; spacing: Style.space(12)
+            opacity: band.active ? 1 : 0.55
             SliderField {
                 controlKey: band.prefix + "Freq"; label: "Frequency"; minimum: 20; maximum: 20000; increment: 1
                 logarithmic: true; logStep: Math.log10(2) / 12; display: root.formatHz(current)
             }
             SliderField {
+                visible: root.eqHasGain(band.type)
                 controlKey: band.prefix + "Gain"; label: "Gain"; minimum: -12; maximum: 12; increment: 0.25; unit: " dB"
-                editable: root.eqHasGain(band.type)
-                display: editable ? "" : "n/a"
+            }
+            Caption {
+                visible: !root.eqHasGain(band.type); width: parent.width; wrapMode: Text.WordWrap
+                text: (root.eqTypes[band.type] || "This filter") + " has no gain; drag its point to move the frequency."
             }
             SliderField {
-                controlKey: band.prefix + "Q"; label: "Q"; minimum: 0.1; maximum: 10; increment: 0.01
+                controlKey: band.prefix + "Q"; label: "Width (Q)"; minimum: 0.1; maximum: 10; increment: 0.01
                 logarithmic: true; logStep: 1 / 64; quantize: "q"; display: current.toFixed(2)
             }
         }
@@ -404,38 +649,70 @@ Panel {
     KeyboardPanel {
         id: popup
         anchorItem: button; owner: root; bar: root.bar; open: root.opened
-        padding: Style.space(24)
+        padding: Style.space(20)
         focusTarget: keys
-        contentWidth: popup.fittedContentWidth(Style.space(392))
-        contentHeight: popup.fittedContentHeight(content.implicitHeight, Style.space(820))
+        contentWidth: popup.fittedContentWidth(Style.space(352))
+        contentHeight: popup.fittedContentHeight(header.height + Style.space(16) + content.implicitHeight, Style.space(820))
         FocusScope {
             id: keys; anchors.fill: parent
             Keys.onEscapePressed: { if (root.phantomArmed) { root.phantomArmed = false; phantomButton.forceActiveFocus() } else if (root.page !== "controls") root.back(); else root.close() }
             Keys.onPressed: function(e) {
                 if (e.key === Qt.Key_M && !e.isAutoRepeat && !root.pending.mute && !root.phantomArmed && root.supported("mute")) { root.toggleSetting("mute"); e.accepted = true }
             }
+            // The header sits outside the scroll area so it can never scroll out of view.
+            Item {
+                id: header; width: parent.width; height: Math.max(Style.space(36), headerText.implicitHeight)
+                Action {
+                    id: backButton; visible: root.page !== "controls"; width: Style.space(30); height: Style.space(30); implicitContentHeight: Style.space(30)
+                    anchors.left: parent.left; anchors.verticalCenter: parent.verticalCenter
+                    text: "‹"; bordered: true; objectName: "back"; Accessible.name: "Back to controls"; onClicked: root.back()
+                }
+                DeviceIcon { id: headingIcon; visible: root.page === "controls"; width: Style.space(26); height: width; ink: root.fg; anchors.left: parent.left; anchors.verticalCenter: parent.verticalCenter }
+                Column {
+                    id: headerText; spacing: Style.space(2)
+                    anchors.left: root.page === "controls" ? headingIcon.right : backButton.right; anchors.leftMargin: Style.space(10)
+                    anchors.right: headerActions.left; anchors.rightMargin: Style.space(8); anchors.verticalCenter: parent.verticalCenter
+                    Label { width: parent.width; elide: Text.ElideRight; text: root.page === "eq" ? "Equalizer" : root.page === "hardware" ? "Hardware" : "Wave XLR MK.2"; font.pixelSize: Style.font.title; font.bold: true }
+                    Caption {
+                        width: parent.width; elide: Text.ElideRight
+                        text: root.disconnected ? "Not connected" : root.stale ? "Reconnecting" : Object.keys(root.pending).length ? "Saving…" : Object.keys(root.highlights).length ? "Changed on the device"
+                            : root.page === "eq" ? "Runs on the device · every app hears it" : root.page === "hardware" ? "Firmware " + (root.state.firmware || "unknown")
+                            : root.state.usb ? "Connected · USB" : "Connected · basic audio"
+                        color: root.stale && !root.disconnected ? Commons.Color.urgent : root.fg
+                    }
+                }
+                Row {
+                    id: headerActions; anchors.right: parent.right; anchors.verticalCenter: parent.verticalCenter; spacing: Style.space(6)
+                    Action {
+                        id: muteButton; visible: root.page === "controls" && root.available; bordered: true
+                        text: root.value("mute") ? "Unmute  M" : "Mute  M"; Accessible.name: root.value("mute") ? "Unmute microphone" : "Mute microphone"
+                        foreground: root.value("mute") ? Commons.Color.urgent : root.fg
+                        enabled: root.supported("mute") && !root.pending.mute; onClicked: root.toggleSetting("mute")
+                    }
+                    Item {
+                        visible: root.page === "eq" && root.available; width: eqSwitch.width + Style.space(8); height: Style.space(30)
+                        Action {
+                            anchors.fill: parent; objectName: "eq"; Accessible.name: "Equalizer " + (root.value("eq") ? "on" : "off")
+                            enabled: root.supported("eq") && !root.pending.eq; onClicked: root.toggleSetting("eq")
+                        }
+                        ToggleSwitch {
+                            id: eqSwitch; anchors.centerIn: parent; checked: !!root.value("eq"); busy: !!root.pending.eq; interactive: false; cursorRing: false
+                            trackHeight: Style.space(18); foreground: root.fg; accent: Commons.Color.accent
+                        }
+                    }
+                    Action { id: helpButton; visible: !root.disconnected; width: Style.space(30); text: "?"; tooltipText: "Controls and keyboard help"; Accessible.name: "Help"; onClicked: root.helpOpen = !root.helpOpen }
+                }
+            }
             Flickable {
-                id: scroll; anchors.fill: parent; contentHeight: content.implicitHeight; clip: true
+                id: scroll; anchors.top: header.bottom; anchors.topMargin: Style.space(16); anchors.left: parent.left; anchors.right: parent.right; anchors.bottom: parent.bottom
+                contentHeight: content.implicitHeight; clip: true
                 boundsBehavior: Flickable.StopAtBounds
                 Controls.ScrollBar.vertical: Controls.ScrollBar {}
                 Column {
-                    id: content; width: parent.width; spacing: Style.space(14)
-                    Row {
-                        width: parent.width
-                        Column {
-                            width: parent.width - helpButton.width; spacing: Style.space(5)
-                            Row {
-                                width: parent.width; spacing: Style.space(10)
-                                DeviceIcon { id: headingIcon; width: Style.space(24); height: width; ink: root.fg; anchors.verticalCenter: parent.verticalCenter }
-                                Label { width: parent.width - headingIcon.width - parent.spacing; wrapMode: Text.WordWrap; text: root.page === "controls" ? "Elgato Wave XLR MK.2" : root.page === "eq" ? "Equalizer" : "Hardware settings"; font.pixelSize: Style.font.heading; font.bold: true }
-                            }
-                            Caption { text: root.disconnected ? "Not connected" : root.stale ? "Reconnecting" : root.state.usb ? "Connected · USB" : "Connected · basic audio"; color: root.disconnected ? root.fg : root.stale ? Commons.Color.urgent : root.fg }
-                        }
-                        Action { id: helpButton; visible: !root.disconnected; text: "?"; tooltipText: "Controls and keyboard help"; bordered: true; onClicked: root.helpOpen = !root.helpOpen }
-                    }
+                    id: content; width: parent.width; spacing: Style.space(16)
                     Caption {
                         width: parent.width; wrapMode: Text.WordWrap; visible: root.helpOpen
-                        text: "M: mute mic. Tab: next control. ← →: adjust. Headphones: 0.25 dB per arrow key; wheel: 1 dB, Shift-wheel: 0.25 dB. Gain: 1 dB. Blend: 0 = mic, 100 = centered, 200 = computer. EQ: frequency steps 1/12 octave; Q steps match the device. These are settings, not signal meters. Hardware changes highlight briefly."
+                        text: "M: mute mic. Tab: next control. ← →: adjust. Esc: back. Headphones: 0.25 dB per arrow key; wheel: 1 dB, Shift-wheel: 0.25 dB. Gain: 1 dB. EQ graph: drag a point for frequency and gain, scroll for width. EQ frequency steps 1/12 octave; Q steps match the device. These are settings, not signal meters."
                     }
                     Label {
                         width: parent.width; wrapMode: Text.WordWrap
@@ -448,58 +725,71 @@ Panel {
                         text: "Connect your Elgato Wave XLR MK.2 or dock your laptop. Controls will appear automatically."
                     }
                     Column {
-                        visible: root.available && root.page === "controls"; width: parent.width; spacing: Style.space(14)
-                        Row {
-                            width: parent.width
-                            Caption { width: parent.width - muteButton.width; text: "MICROPHONE"; anchors.verticalCenter: parent.verticalCenter; font.letterSpacing: 1 }
-                            Action { id: muteButton; text: root.value("mute") ? "Unmute mic  M" : "Mute mic  M"; foreground: root.value("mute") ? Commons.Color.urgent : root.fg; bordered: true; enabled: root.supported("mute") && !root.pending.mute; onClicked: root.toggleSetting("mute") }
-                        }
-                        SliderField { controlKey: "gain"; label: "Gain"; minimum: 0; maximum: 80; increment: 1; unit: " dB"; hero: true; leftCaption: "0 dB"; rightCaption: "80 dB" }
+                        visible: root.available && root.page === "controls"; width: parent.width; spacing: Style.space(16)
+                        SliderField { controlKey: "gain"; label: "Mic gain"; minimum: 0; maximum: 80; increment: 1; unit: " dB"; hero: true; leftCaption: "0"; rightCaption: "80 dB" }
                         Divider {}
-                        Caption { text: "MONITORING"; font.letterSpacing: 1 }
                         SliderField { controlKey: "headphones"; label: "Headphones"; minimum: -60; maximum: 0; increment: 0.25; unit: " dB" }
-                        SliderField { controlKey: "balance"; label: "Monitor blend"; minimum: 0; maximum: 200; increment: 1; leftCaption: "Mic"; rightCaption: "Computer" }
+                        SliderField { controlKey: "balance"; label: "Monitor mix"; minimum: 0; maximum: 200; increment: 1; leftCaption: "Mic"; rightCaption: "Computer" }
                         Divider {}
-                        Caption { text: "ONBOARD PROCESSING"; font.letterSpacing: 1 }
                         Column {
-                            width: parent.width; spacing: 0
-                            Effect { controlKey: "clipguard"; label: "Clipguard" }
-                            Effect { controlKey: "lowCut"; label: "Low cut" }
-                            Effect { controlKey: "expander"; label: "Expander" }
-                            Effect { controlKey: "compressor"; label: "Compressor" }
-                            Effect { controlKey: "voiceTune"; label: "Voice Tune" }
+                            width: parent.width; spacing: Style.space(8)
+                            Caption { text: "ONBOARD PROCESSING"; font.letterSpacing: 1 }
+                            Grid {
+                                width: parent.width; columns: 2; spacing: Style.space(8)
+                                Chip { controlKey: "clipguard"; label: "Clipguard" }
+                                Chip { controlKey: "lowCut"; label: "Low cut" }
+                                Chip { controlKey: "expander"; label: "Expander" }
+                                Chip { controlKey: "compressor"; label: "Compressor" }
+                            }
+                            Rectangle {
+                                width: parent.width; height: voiceTune.implicitHeight + Style.space(16)
+                                radius: Style.cornerRadius
+                                color: root.value("voiceTune") ? Util.alpha(root.fg, 0.08) : "transparent"
+                                border.width: root.value("voiceTune") ? 0 : Math.max(1, Style.space(1)); border.color: Util.alpha(root.fg, 0.16)
+                                Column {
+                                    id: voiceTune; x: Style.space(10); y: Style.space(4); width: parent.width - Style.space(18); spacing: Style.space(2)
+                                    Effect { controlKey: "voiceTune"; label: "Voice Tune" }
+                                    SliderField { controlKey: "strength"; label: "Strength"; increment: 1; unit: "%"; opacity: root.value("voiceTune") ? 1 : 0.55 }
+                                }
+                            }
                         }
-                        SliderField { controlKey: "strength"; label: "Voice Tune strength"; increment: 1; unit: "%"; opacity: root.value("voiceTune") ? 1 : 0.55 }
-                        Action {
-                            id: eqButton; width: parent.width; leftAlign: true; visible: root.state.eq !== undefined
-                            text: "Equalizer  ·  " + (root.value("eq") ? "On" : "Off") + "  →"
-                            onClicked: root.openPage("eq")
-                        }
-                        Caption {
-                            width: parent.width; wrapMode: Text.WordWrap
-                            visible: root.state.usb === true && root.state.eq === undefined
-                            text: root.eqUnavailableText()
-                        }
-                        Divider {}
-                        Action {
-                            id: hardwareButton; width: parent.width; leftAlign: true
-                            text: "Hardware settings  ·  48V " + (root.state.phantom === undefined ? "—" : root.state.phantom ? "On" : "Off") + "  →"
-                            onClicked: root.openPage("hardware")
+                        Column {
+                            width: parent.width
+                            Divider {}
+                            NavRow {
+                                id: eqButton; visible: root.state.usb === true
+                                title: "Equalizer"; active: root.state.eq !== undefined
+                                detail: !active ? root.eqUnavailableText()
+                                    : root.value("eq") ? "On · " + [1, 2, 3, 4].filter(function(n) { return root.value("eq" + n + "On") }).length + " of 4 bands" : "Off · bands kept"
+                                onActivated: root.openPage("eq")
+                                EqGraph { visible: eqButton.active; width: Style.space(84); height: Style.space(26) }
+                            }
+                            Divider { visible: eqButton.visible }
+                            NavRow {
+                                id: hardwareButton; title: "Hardware"; detail: "Phantom power, headphones, firmware"
+                                onActivated: root.openPage("hardware")
+                                Label { visible: root.state.phantom === true; text: "48V"; color: Commons.Color.accent; font.pixelSize: Style.font.caption; font.bold: true }
+                            }
                         }
                     }
                     Column {
-                        visible: root.available && root.page === "hardware"; width: parent.width; spacing: Style.space(18)
-                        Row {
-                            width: parent.width
-                            Label { width: parent.width - phantomButton.width; text: "48V phantom power"; anchors.verticalCenter: parent.verticalCenter }
+                        visible: root.available && root.page === "hardware"; width: parent.width; spacing: Style.space(4)
+                        Item {
+                            width: parent.width; height: Math.max(phantomButton.height, phantomText.implicitHeight) + Style.space(16)
+                            Column {
+                                id: phantomText; spacing: Style.space(2)
+                                anchors.left: parent.left; anchors.right: phantomButton.left; anchors.rightMargin: Style.space(12); anchors.verticalCenter: parent.verticalCenter
+                                Label { width: parent.width; text: "48V phantom power" }
+                                Caption { width: parent.width; wrapMode: Text.WordWrap; text: "For microphones that need it. Switching may briefly mute the mic." }
+                            }
                             Action {
-                                id: phantomButton; bordered: true
+                                id: phantomButton; bordered: true; anchors.right: parent.right; anchors.verticalCenter: parent.verticalCenter
                                 text: root.pending.phantom ? "Pending…" : (root.state.phantom === undefined ? "—" : root.state.phantom ? "On" : "Off") + " · Change"
+                                foreground: root.state.phantom ? Commons.Color.accent : root.fg
                                 enabled: root.supported("phantom") && !root.pending.phantom && !root.phantomArmed
                                 onClicked: { root.phantomTarget = !root.state.phantom; root.phantomArmed = true; Qt.callLater(function() { cancelPhantom.forceActiveFocus() }) }
                             }
                         }
-                        Caption { width: parent.width; wrapMode: Text.WordWrap; text: "Power for microphones that need it. Changing this may briefly mute the mic." }
                         Column {
                             visible: root.phantomArmed; width: parent.width; spacing: Style.space(10)
                             Label { width: parent.width; wrapMode: Text.WordWrap; text: "Turn 48V " + (root.phantomTarget ? "on" : "off") + "? Use phantom power only when your microphone requires it."; color: Commons.Color.urgent }
@@ -510,14 +800,24 @@ Panel {
                             }
                         }
                         Divider {}
-                        Effect { controlKey: "lowImpedance"; label: "Low impedance mode" }
-                        Caption { text: "Headphone output" }
+                        Effect { controlKey: "lowImpedance"; label: "Low-impedance headphones"; detail: "Headphone output mode" }
                         Divider {}
-                        Caption { text: "ABOUT THIS CONTROL PANEL"; font.letterSpacing: 1 }
-                        Caption { visible: root.state.firmware !== undefined; text: "Firmware " + root.state.firmware }
-                        Caption { width: parent.width; wrapMode: Text.WordWrap; text: "Controls the device’s onboard settings, including its hardware EQ. Lighting, Auto Gain and firmware updates aren’t available here. Wave Link app mixing and VST effects are separate." }
-                        Action { text: "Use mic + headphones as defaults"; bordered: true; enabled: root.available; onClicked: root.send("defaults") }
-                        Action { id: backButton; text: "← Back to controls"; foreground: Commons.Color.accent; onClicked: root.back() }
+                        Item {
+                            width: parent.width; height: Math.max(defaultsButton.height, defaultsText.implicitHeight) + Style.space(16)
+                            Column {
+                                id: defaultsText; spacing: Style.space(2)
+                                anchors.left: parent.left; anchors.right: defaultsButton.left; anchors.rightMargin: Style.space(12); anchors.verticalCenter: parent.verticalCenter
+                                Label { width: parent.width; text: "System audio" }
+                                Caption { width: parent.width; wrapMode: Text.WordWrap; text: "Use this mic and headphones in every app." }
+                            }
+                            Action { id: defaultsButton; anchors.right: parent.right; anchors.verticalCenter: parent.verticalCenter; text: "Set as default"; bordered: true; enabled: root.available; onClicked: root.send("defaults") }
+                        }
+                        Divider {}
+                        Column {
+                            width: parent.width; spacing: Style.space(6); topPadding: Style.space(8)
+                            Caption { text: "ABOUT"; font.letterSpacing: 1 }
+                            Caption { width: parent.width; wrapMode: Text.WordWrap; text: "These settings live on the device and stay after this panel closes. Lighting, Auto Gain and firmware updates need Elgato Wave Link; its app mixing and VST effects are separate." }
+                        }
                     }
                     // Created only while the EQ page is shown, so its bindings cost nothing otherwise.
                     Loader {
@@ -525,29 +825,43 @@ Panel {
                         active: root.available && root.page === "eq"; visible: active
                         sourceComponent: Column {
                             width: eqPage.width; spacing: Style.space(14)
-                            Effect { controlKey: "eq"; label: "Equalizer" }
-                            Caption { width: parent.width; wrapMode: Text.WordWrap; text: "Runs on the device’s own processor, so it shapes the mic for every app and stays on after this panel closes. Bands set in Wave Link are kept." }
-                            Divider {}
                             Column {
-                                width: parent.width; spacing: Style.space(14)
-                                opacity: root.value("eq") ? 1 : 0.7
-                                EqBand { number: 1 }
-                                Divider {}
-                                EqBand { number: 2 }
-                                Divider {}
-                                EqBand { number: 3 }
-                                Divider {}
-                                EqBand { number: 4 }
+                                width: parent.width; spacing: Style.space(4)
+                                Rectangle {
+                                    width: parent.width; height: Style.space(150); radius: Style.cornerRadius
+                                    color: Util.alpha(root.fg, 0.04)
+                                    EqGraph { anchors.fill: parent; editable: true }
+                                    Caption { x: Style.space(6); y: Style.space(4); text: "+12"; font.pixelSize: Style.font.caption - 1 }
+                                    Caption { anchors.right: parent.right; anchors.rightMargin: Style.space(6); anchors.bottom: parent.bottom; anchors.bottomMargin: Style.space(3); text: "−12 dB"; font.pixelSize: Style.font.caption - 1 }
+                                }
+                                Item {
+                                    width: parent.width; height: Style.font.caption + Style.space(4)
+                                    Repeater {
+                                        model: [[20, "20"], [100, "100"], [1000, "1k"], [10000, "10k"], [20000, "20k"]]
+                                        Caption {
+                                            text: modelData[1]
+                                            x: Math.max(0, Math.min(parent.width - width, root.eqX(modelData[0], parent.width) - width / 2))
+                                        }
+                                    }
+                                }
                             }
-                            Divider {}
-                            Action { objectName: "eqBack"; text: "← Back to controls"; foreground: Commons.Color.accent; onClicked: root.back(); Component.onCompleted: root.eqBackButton = this }
+                            Rectangle {
+                                width: parent.width; height: tabs.height + Style.space(6); radius: Style.cornerRadius
+                                color: Util.alpha(root.fg, 0.04)
+                                Row {
+                                    id: tabs; x: Style.space(3); y: Style.space(3); width: parent.width - Style.space(6); spacing: Style.space(4)
+                                    BandTab { number: 1 }
+                                    BandTab { number: 2 }
+                                    BandTab { number: 3 }
+                                    BandTab { number: 4 }
+                                }
+                            }
+                            // Rebuilt per band so its sliders never carry another band's drag state.
+                            Repeater {
+                                model: [root.eqBand]
+                                EqBand { number: modelData }
+                            }
                         }
-                    }
-                    Row {
-                        visible: !root.disconnected
-                        width: parent.width
-                        Caption { width: parent.width - refreshButton.width; anchors.verticalCenter: parent.verticalCenter; text: Object.keys(root.highlights).length ? "Device change" : Object.keys(root.pending).length ? "Saving…" : root.stale ? "Settings unavailable" : "Live hardware settings" }
-                        Action { id: refreshButton; text: "Refresh"; enabled: worker.running; onClicked: { root.error = ""; root.send("refresh") } }
                     }
                 }
             }
