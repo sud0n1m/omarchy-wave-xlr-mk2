@@ -45,10 +45,23 @@ switches, borders, sizing) intentionally follow the shell rather than the mockup
 
 A single persistent Rust worker owns the vendor USB interface. The panel uses
 newline-delimited JSON on stdin/stdout, rather than spawning a process per poll.
-It reads every 50 ms while open and 500 ms while closed, sending changed state
-plus a liveness frame at least once per second while hardware is present. An
-unchanged heartbeat carries no state, and an unchanged USB read is not decoded
-again ([v1.3.0 measurements](docs/hardware-eq-efficiency.md)). Incoming
+Device-side changes are event-driven. The MK.2 reports gain, mute and
+headphone changes (knob, mute button or any writer) on its audio-control
+interrupt endpoint; the worker subscribes to the card's ALSA control events
+through the kernel interface (no libasound) and reads only the reported block
+within a few milliseconds. With events active, the closed panel needs only a
+5-second safety read; the open panel also reads the two blocks the dial can
+change without an event (monitor blend, Voice Tune strength) every 50 ms.
+Without events (no card access), it falls back to reading every block every
+50 ms open and 500 ms closed.
+
+The worker sends a liveness frame at least once per second while hardware is
+present. A full `state` frame is sent on `poll`, `refresh`, reconnection and
+errors; between steady connected states only the changed fields are sent as
+`patch`, and an unchanged heartbeat carries neither. Command results carry no
+state, because every change was published as a frame before them. An
+unchanged USB read is not decoded again. Writes read, modify and read back
+only the target block ([v1.3.0 measurements](docs/hardware-eq-efficiency.md)). Incoming
 reads never disable sliders. Local drags display immediately, coalesce writes
 at 50 ms, and flush the final release. Pending IDs protect newer edits from older
 acknowledgments. Device-side changes briefly highlight the affected number.

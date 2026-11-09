@@ -47,6 +47,17 @@ ctx.acceptState({...ctx.state,gain:45});
   assert.equal(ctx.error,'','liveness-only heartbeat is not an unreadable response');
   ctx.receive(JSON.stringify({type:'state',seq:seq+1,sampledAtMs:1}));
   assert.equal(ctx.watchdogCount,beforeWatchdog+1,'replayed heartbeat is ignored');
+  ctx.receive(JSON.stringify({type:'state',seq:seq+2,sampledAtMs:2,patch:{gain:46}}));
+  assert.equal(ctx.state.gain,46,'patch frames update the changed field');
+  assert.equal(ctx.state.usb,true,'patch frames keep the other fields');
+  assert.notEqual(ctx.state,before,'a real change replaces the state object for bindings');
+  const patched=ctx.state;
+  ctx.receive(JSON.stringify({type:'state',seq:seq+3,sampledAtMs:3,patch:{gain:46}}));
+  assert.equal(ctx.state,patched,'a no-op patch keeps state identity');
+  ctx.receive(JSON.stringify({type:'result',id:12345,ok:true}));
+  assert.equal(ctx.state,patched,'a stateless result keeps state');
+  assert.equal(ctx.error,'','a stateless result is not an error');
+  ctx.receive(JSON.stringify({type:'state',seq:seq+4,sampledAtMs:4,patch:{gain:45}}));
 }
 assert.equal(ctx.state.gain,45,'changed device values must still be delivered');
 ctx.transportError='Device worker stopped'; ctx.error='Old error';

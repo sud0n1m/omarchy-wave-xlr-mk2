@@ -7,6 +7,8 @@ struct FakeState {
     blocks: Blocks,
     opens: usize,
     reads: usize,
+    /// Single-block reads, in order.
+    block_reads: Vec<u16>,
     drops: usize,
     writes: Vec<(u16, Vec<u8>)>,
     open_error: Option<(String, bool)>,
@@ -37,6 +39,7 @@ impl FakeState {
             blocks,
             opens: 0,
             reads: 0,
+            block_reads: Vec::new(),
             drops: 0,
             writes: Vec::new(),
             open_error: None,
@@ -67,6 +70,21 @@ impl Device for FakeDevice {
         } else {
             Ok(shared.blocks.clone())
         }
+    }
+
+    fn read_one(&mut self, block: u16, blocks: &mut Blocks) -> Result<(), String> {
+        let mut shared = self.0.borrow_mut();
+        shared.block_reads.push(block);
+        if shared.read_error {
+            return Err("Device disconnected during read".into());
+        }
+        let fresh = match block {
+            1 => shared.blocks.blend.to_vec(),
+            4 => shared.blocks.settings.to_vec(),
+            5 => shared.blocks.headphones.to_vec(),
+            _ => return Err("Unexpected block".into()),
+        };
+        crate::device::set_block(blocks, block, &fresh)
     }
 
     fn write(&mut self, block: u16, bytes: &[u8]) -> Result<(), String> {
@@ -166,13 +184,22 @@ fn fixture() -> (
     )
 }
 
+/// The fields a state frame carries: the whole state or just a patch.
+fn frame(event: &Value) -> &Value {
+    event.get("state").unwrap_or(&event["patch"])
+}
+
 fn command<C: Fn() -> u64>(worker: &mut Worker<FakePlatform, C>, message: Value) -> Value {
     worker.command(message);
-    let event = worker
+    let mut event = worker
         .take_events()
         .pop()
         .expect("command must return a result");
     assert_eq!(event["type"], "result");
+    assert!(event.get("state").is_none(), "results carry no state");
+    // State changes arrive as frames before the result; assert on the
+    // worker's published state.
+    event["state"] = worker.state.clone();
     event
 }
 
@@ -573,9 +600,10 @@ fn fallback_rejected_write_publishes_fresh_state_and_is_never_replayed() {
     assert_eq!(events[0]["sampledAtMs"], 1500);
     assert_eq!(events[1]["ok"], false);
     assert!(events[1]["error"].as_str().unwrap().contains("confirm"));
-    assert_eq!(events[1]["state"]["gain"], 42);
-    assert_eq!(events[1]["state"]["connected"], true);
-    assert_eq!(events[1]["state"]["stale"], false);
+    assert!(events[1].get("state").is_none());
+    assert_eq!(frame(&events[0])["gain"], 42);
+    assert_eq!(worker.state["connected"], true);
+    assert_eq!(worker.state["stale"], false);
 
     now.set(worker.next_poll);
     worker.tick();
@@ -611,7 +639,7 @@ fn physical_changes_publish_without_writing() {
     worker.tick();
     let events = worker.take_events();
     assert_eq!(events.len(), 1);
-    assert_eq!(events[0]["state"]["gain"], 46);
+    assert_eq!(events[0]["patch"], json!({"gain":46}));
     assert!(shared.borrow().writes.is_empty());
 }
 
@@ -633,11 +661,19 @@ fn set_uses_fresh_read_and_reports_concurrent_readback_field() {
     assert_eq!(events[1]["type"], "result");
     assert_eq!(events[1]["id"], "set-1");
     assert_eq!(events[1]["ok"], true);
-    assert_eq!(events[1]["state"]["gain"], 41);
-    assert_eq!(events[1]["state"]["strength"], 12);
-    assert_eq!(events[1]["state"]["phantom"], true);
+    assert!(events[1].get("state").is_none());
+    assert_eq!(
+        events[0]["patch"],
+        json!({"gain":41,"strength":12,"phantom":true}),
+        "a write publishes only the changed fields"
+    );
     let fake = shared.borrow();
-    assert_eq!(fake.reads, 3, "set must read before and after writing");
+    assert_eq!(fake.reads, 1, "only the initial sample reads every block");
+    assert_eq!(
+        fake.block_reads,
+        [4, 4],
+        "set freshly reads the target block before and after writing"
+    );
     assert_eq!(fake.writes.len(), 1);
     assert_eq!(fake.writes[0].0, 4);
     assert_eq!(fake.writes[0].1[37], 0xa5);
@@ -946,8 +982,8 @@ fn unchanged_reads_skip_decoding_and_heartbeats_omit_state() {
     worker.tick();
     let changed = worker.take_events();
     assert_eq!(changed.len(), 1);
-    assert_eq!(changed[0]["state"]["gain"], 50);
-    assert_eq!(changed[0]["state"]["eq4Freq"], 10237);
+    assert_eq!(changed[0]["patch"], json!({"gain":50}));
+    assert_eq!(worker.state["eq4Freq"], 10237);
     // Explicit refresh always returns the full state, even if unchanged.
     let result = command(&mut worker, json!({"id":1,"op":"refresh"}));
     assert_eq!(result["state"]["gain"], 50);
@@ -967,4 +1003,154 @@ fn unchanged_reads_skip_decoding_and_heartbeats_omit_state() {
     let back = worker.take_events();
     assert_eq!(back.last().unwrap()["state"]["stale"], false);
     assert_eq!(back.last().unwrap()["state"]["gain"], 50);
+}
+
+#[test]
+fn control_events_replace_closed_polling_and_sample_immediately() {
+    let (mut worker, now, shared) = fixture();
+    worker.sample(true);
+    worker.take_events();
+    assert_eq!(worker.next_poll, 1500, "no events: 500 ms closed polling");
+    worker.set_events(true);
+    assert_eq!(worker.next_poll, 1500, "enabling never delays a due poll");
+    now.set(1500);
+    worker.tick();
+    assert_eq!(shared.borrow().reads, 2);
+    assert_eq!(
+        worker.next_poll,
+        1500 + Worker::<FakePlatform, fn() -> u64>::EVENT_SAFETY_POLL_MS
+    );
+    // Heartbeats continue every second without USB reads.
+    for instant in [2500, 3500, 4500] {
+        now.set(instant);
+        worker.tick();
+        assert_eq!(worker.take_events().len(), 1);
+    }
+    assert_eq!(shared.borrow().reads, 2, "no polling between events");
+    // A knob turn is reported by the device and sampled at once.
+    shared.borrow_mut().blocks.settings[0] = 52;
+    now.set(4600);
+    worker.device_signaled(crate::control_events::SETTINGS);
+    assert_eq!(worker.wait_ms(), Some(0));
+    worker.tick();
+    let events = worker.take_events();
+    assert_eq!(events[0]["patch"], json!({"gain":52}));
+    assert_eq!(
+        shared.borrow().reads,
+        2,
+        "an event never forces a full read"
+    );
+    assert_eq!(shared.borrow().block_reads, [4], "only the reported block");
+    assert_eq!(
+        worker.next_poll,
+        1500 + Worker::<FakePlatform, fn() -> u64>::EVENT_SAFETY_POLL_MS,
+        "event samples keep the safety-poll schedule"
+    );
+    // An open panel still polls at 50 ms for vendor-only dial changes.
+    command(&mut worker, json!({"id":1,"op":"poll","intervalMs":50}));
+    assert_eq!(worker.next_poll, 4650);
+    command(&mut worker, json!({"id":2,"op":"poll","intervalMs":500}));
+    assert_eq!(
+        worker.next_poll,
+        4600 + Worker::<FakePlatform, fn() -> u64>::EVENT_SAFETY_POLL_MS
+    );
+    // Losing the subscription restores 500 ms polling right away.
+    worker.set_events(false);
+    assert_eq!(worker.next_poll, 5100);
+}
+
+#[test]
+fn control_events_never_wake_an_absent_or_unopened_device() {
+    let (mut worker, _, shared) = fixture();
+    shared.borrow_mut().attached = false;
+    worker.sample(true);
+    worker.set_events(true);
+    worker.device_signaled(crate::control_events::ALL_BLOCKS);
+    assert_eq!(worker.next_poll, u64::MAX);
+    assert_eq!(worker.wait_ms(), None);
+    let (mut worker, _, shared) = fixture();
+    shared.borrow_mut().open_error = Some(("Busy".into(), false));
+    worker.backoff = 5000;
+    worker.sample(false);
+    let due = worker.next_poll;
+    worker.device_signaled(crate::control_events::ALL_BLOCKS);
+    assert_eq!(worker.next_poll, due, "reconnect backoff is kept");
+}
+
+#[test]
+fn writes_use_the_cache_and_their_echo_reads_one_block() {
+    let (mut worker, now, shared) = fixture();
+    worker.set_events(true);
+    worker.sample(true);
+    worker.take_events();
+    // Another block changed on the device since the cached sample.
+    shared.borrow_mut().blocks.blend[0] = 120;
+    let result = command(
+        &mut worker,
+        json!({"id":1,"op":"set","key":"headphones","value":-10.25}),
+    );
+    assert_eq!(result["ok"], true);
+    assert_eq!(result["state"]["headphones"], -10.25);
+    assert_eq!(shared.borrow().block_reads, [5, 5]);
+    assert_eq!(shared.borrow().writes.len(), 1);
+    assert_eq!(shared.borrow().writes[0].0, 5);
+    // The write's own control event re-reads just the headphone block: same
+    // bytes, so nothing is decoded or emitted.
+    now.set(1001);
+    worker.device_signaled(crate::control_events::HEADPHONES);
+    worker.tick();
+    assert!(worker.take_events().is_empty());
+    assert_eq!(shared.borrow().block_reads, [5, 5, 5]);
+    assert_eq!(shared.borrow().reads, 1);
+    // The next full poll catches the change in the uncached block.
+    now.set(worker.next_poll);
+    worker.tick();
+    assert_eq!(worker.take_events()[0]["patch"], json!({"balance":120}));
+    assert_eq!(shared.borrow().reads, 2);
+    // Without a cache, a write reads every block first.
+    let reads = shared.borrow().reads;
+    worker.decoded = None;
+    let result = command(
+        &mut worker,
+        json!({"id":2,"op":"set","key":"gain","value":44}),
+    );
+    assert_eq!(result["ok"], true);
+    assert_eq!(shared.borrow().reads, reads + 1);
+}
+
+#[test]
+fn open_panel_with_events_polls_only_the_dial_blocks() {
+    let (mut worker, now, shared) = fixture();
+    worker.set_events(true);
+    command(&mut worker, json!({"id":1,"op":"poll","intervalMs":50}));
+    worker.take_events();
+    assert_eq!(shared.borrow().reads, 1, "opening forces one full read");
+    assert_eq!(worker.next_poll, 1050);
+    for step in 1..=10u64 {
+        now.set(1000 + step * 50);
+        worker.tick();
+    }
+    let fake = shared.borrow();
+    assert_eq!(fake.reads, 1, "no full reads between safety polls");
+    assert_eq!(fake.block_reads.len(), 20);
+    assert!(fake.block_reads.chunks(2).all(|pair| pair == [1, 4]));
+    drop(fake);
+    // The dial changes the monitor blend: seen at the next 50 ms poll.
+    shared.borrow_mut().blocks.blend[0] = 150;
+    now.set(1550);
+    worker.tick();
+    assert_eq!(
+        worker.take_events().last().unwrap()["patch"]["balance"],
+        150
+    );
+    // Every block is still read at the safety interval.
+    now.set(6000);
+    worker.tick();
+    assert_eq!(shared.borrow().reads, 2);
+    // Without events, the open panel reads all three blocks every 50 ms.
+    worker.set_events(false);
+    let reads = shared.borrow().reads;
+    now.set(worker.next_poll);
+    worker.tick();
+    assert_eq!(shared.borrow().reads, reads + 1);
 }

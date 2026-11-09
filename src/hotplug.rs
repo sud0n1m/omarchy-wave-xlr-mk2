@@ -16,6 +16,9 @@ impl Hotplug {
     pub fn new() -> Result<Self, String> {
         let socket = udev::MonitorBuilder::new()
             .and_then(|builder| builder.match_subsystem_devtype("usb", "usb_device"))
+            // Sound cards register after their USB device; this is when the
+            // control-event subscription can be (re)opened.
+            .and_then(|builder| builder.match_subsystem("sound"))
             .and_then(|builder| builder.listen())
             .map_err(|error| format!("USB event monitor unavailable: {error}"))?;
         Ok(Self { socket })
