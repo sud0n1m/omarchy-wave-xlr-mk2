@@ -53,14 +53,18 @@ Device-side changes are event-driven. The MK.2 reports gain, mute and
 headphone changes (knob, mute button or any writer) on its audio-control
 interrupt endpoint; the worker subscribes to the card's ALSA control events
 through the kernel interface (no libasound) and reads only the reported block
-within a few milliseconds. With events active, the closed panel needs only a
-5-second safety read; the open panel also reads the two blocks the dial can
-change without an event (monitor blend, Voice Tune strength) every 50 ms.
+within a few milliseconds. With events active and the panel closed, the
+worker does nothing until the device, a command or a hotplug wakes it: no
+polling and no heartbeat (0 wakeups/s idle, against about 9 in v1.2.3). The
+open panel also reads the two blocks the dial can change without an event
+(monitor blend, Voice Tune strength) every 50 ms, and every block every 5 s.
 Without events (no card access), it falls back to reading every block every
 50 ms open and 500 ms closed.
 
 The worker sends a liveness frame at least once per second while hardware is
-present. A full `state` frame is sent on `poll`, `refresh`, reconnection and
+present, except while quiet: with events active and the panel closed, its
+frames carry `"quiet": true` and the shell stops its watchdog until a command
+is outstanding or a frame without the flag arrives. A full `state` frame is sent on `poll`, `refresh`, reconnection and
 errors; between steady connected states only the changed fields are sent as
 `patch`, and an unchanged heartbeat carries neither. Command results carry no
 state, because every change was published as a frame before them. An
