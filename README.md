@@ -25,11 +25,21 @@ switches, borders, sizing) intentionally follow the shell rather than the mockup
   and 48V phantom power with explicit confirmation. Cancel receives focus first.
 - Wheel steps headphones by 1 dB; Shift-wheel by 0.25 dB. Tab/Shift-Tab navigate,
   arrows adjust sliders, M toggles mute, Escape cancels/backs out/closes.
-- Hardware settings contains the explicit “Use mic + headphones as defaults”
+- Hardware EQ (firmware 1.0.15 or later): the four-band equalizer Wave Link
+  runs on the unit's own processor. Master switch, and per band: on/off, filter
+  type (high-pass, low shelf, bell, notch, high shelf, low-pass), frequency
+  20 Hz–20 kHz, gain ±12 dB in 0.25 dB steps, and Q 0.1–10. Frequency and Q
+  sliders are logarithmic; arrows and the wheel step 1/12 octave and one
+  device Q step. Gain is disabled for the types that ignore it. Bands set in
+  Wave Link are shown and kept. Wave Link leaves the EQ running when it quits,
+  so a unit last used on Windows or macOS may arrive with it switched on.
+- Hardware settings shows the firmware version and contains the explicit “Use mic + headphones as defaults”
   action. Loading the plugin changes neither defaults nor hardware settings.
 - Help explains controls and keyboard behavior. Values are settings, not meters.
-- EQ, LED customization, Auto Gain, gain-lock policy, firmware upgrades,
-  Wave Link application mixing and VST hosting are not implemented.
+- Compressor/expander parameter tuning (threshold, ratio, attack, release),
+  LED customization, Auto Gain, gain-lock policy, firmware upgrades, Wave Link
+  application mixing and VST hosting are not implemented. The compressor and
+  expander byte layout is only inferred from the Wave:3 MK.2 for this model.
 
 ## Responsive device state
 
@@ -79,6 +89,15 @@ worker holding the lock. Do not run another vendor-control app concurrently.
 
 Mapping reference: [OpenXLR WaveXlrMk2Device.cs](https://github.com/emaspa/openxlr/blob/main/src/OpenXLR.Core/Devices/WaveXlrMk2Device.cs).
 Vendor/product 0fd9:00b6, interface 3, bank 0x0203, blocks 1/4/5 (6/38/2 bytes).
+Block 0 (117 bytes) is read once per connection; bytes 5–7 are the firmware
+version. From firmware 1.0.15, block 4 also carries the EQ: byte 2 bit 0 is
+the master switch, and four 5-byte bands start at byte 18 (flags with bit 0 on
+and bits 1–3 the type, int8 gain in quarter dB, uint16 LE frequency, int8 Q as
+round(64·log10 Q)). EQ controls appear only when the firmware is new enough
+and every band decodes within Wave Link's ranges; otherwise the state reports
+`eqUnavailable` (`firmwareOld`, `firmwareUnknown` or `unsupportedBlock`) and
+EQ writes are refused before any transfer. Band edits keep the flag byte's
+unknown bits 4–7. EQ mapping reference: [OpenXLR MK.2 EQ findings](https://github.com/emaspa/openxlr/blob/main/docs/mk2-eq-findings.md).
 The Rust/libusb worker claims only the vendor interface and never detaches the
 audio driver. Writes read the current block, modify only the chosen field,
 preserve unknown bytes, and confirm the selected value by readback. Unexpected
@@ -199,7 +218,9 @@ cargo clippy --locked --all-targets -- -D warnings
 cargo test --locked --test panel -- --ignored --nocapture
 ```
 
-The Rust tests use fake devices and clocks for protocol preservation, bounds,
+The Rust tests use fake devices and clocks for protocol preservation (every EQ
+field against every other byte and bit, Q encoding for all 129 device values,
+the firmware gate and corrupt bands), bounds,
 readback, reconnects, ALSA fallback, stale-state handling, and deadlines. Framing
 and subprocess tests cover oversized/invalid input, timeout cleanup, and output
 larger than a pipe buffer. These tests never write to real hardware.
@@ -211,7 +232,8 @@ verifies that the pinned running image is still used, rejects a wrong digest,
 and checks private-copy cleanup. It runs a harmless fixture without sudo.
 
 The optional UI tests are run by Rust and exercise JavaScript functions and slider
-components extracted from the actual `Panel.qml`. The slider tests use an isolated
+components extracted from the actual `Panel.qml`, including the logarithmic
+frequency and Q sliders. The slider tests use an isolated
 offscreen shell and never start the device worker. These two tests are explicitly
 ignored by default so the worker suite can run without desktop dependencies.
 

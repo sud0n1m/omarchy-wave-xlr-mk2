@@ -66,6 +66,25 @@ Panel {
             var p = copy(pending); p[key] = id; pending = p
         }
     }
+    readonly property var eqTypes: ["High-pass", "Low shelf", "Bell", "Notch", "High shelf", "Low-pass"]
+    function eqHasGain(type) { return type === 1 || type === 2 || type === 4 }
+    // The device stores Q as round(64·log10 Q); report it as the worker does (3 significant digits).
+    function qSnap(q) {
+        var b = Math.max(-64, Math.min(64, Math.round(64 * Math.log10(q))))
+        var v = Math.pow(10, b / 64), scale = Math.pow(10, 2 - Math.floor(Math.log10(v)))
+        return Math.round(v * scale) / scale
+    }
+    function formatHz(f) { return f >= 1000 ? (Math.round(f / 100) / 10) + " kHz" : Math.round(f) + " Hz" }
+    function eqUnavailableText() {
+        var reason = state.eqUnavailable
+        if (reason === "firmwareOld") return "Hardware EQ needs firmware 1.0.15 or later (this unit has " + (state.firmware || "older firmware") + "). Update it with Elgato Wave Link on Windows or macOS."
+        if (reason === "unsupportedBlock") return "The device’s EQ settings weren’t recognized, so the EQ is left untouched."
+        return "Firmware version couldn’t be read; hardware EQ is unavailable."
+    }
+    function openPage(name) {
+        page = name; scroll.contentY = 0
+        Qt.callLater(function() { (name === "eq" ? eqBackButton : backButton).forceActiveFocus() })
+    }
     function setDragging(key, active) { var d = copy(dragging); d[key] = active; dragging = d }
     function toggleSetting(key) { edit(key, value(key) ? 0 : 1, true) }
     function armWatchdog() {
@@ -131,7 +150,11 @@ Panel {
             }
         } catch (e) { error = "Unreadable device response" }
     }
-    function back() { phantomArmed = false; page = "controls"; Qt.callLater(function() { hardwareButton.forceActiveFocus() }) }
+    function back() {
+        var from = page
+        phantomArmed = false; page = "controls"
+        Qt.callLater(function() { (from === "eq" ? eqButton : hardwareButton).forceActiveFocus() })
+    }
     Component.onCompleted: worker.running = true
     onOpenedChanged: {
         phantomArmed = false
@@ -212,6 +235,12 @@ Panel {
         property bool hero: false
         property string leftCaption: ""
         property string rightCaption: ""
+        property bool logarithmic: false
+        property real logStep: 0.01
+        property string quantize: ""
+        property string display: ""
+        property bool editable: true
+        readonly property bool live: root.supported(controlKey) && editable
         readonly property real current: root.value(controlKey) !== undefined ? Number(root.value(controlKey)) : minimum
         width: parent.width; spacing: Style.space(3)
         Row {
@@ -219,31 +248,32 @@ Panel {
             Label { width: parent.width - numeric.width; text: field.label; anchors.verticalCenter: parent.verticalCenter }
             Label {
                 id: numeric
-                text: root.value(field.controlKey) === undefined ? "—" : field.controlKey === "balance" ? (field.current === 100 ? "Centered" : field.current < 100 ? "Mic +" + Math.round(100-field.current) : "Computer +" + Math.round(field.current-100)) : String(Math.round(field.current * 100) / 100) + field.unit
+                text: root.value(field.controlKey) === undefined ? "—" : field.display !== "" ? field.display : field.controlKey === "balance" ? (field.current === 100 ? "Centered" : field.current < 100 ? "Mic +" + Math.round(100-field.current) : "Computer +" + Math.round(field.current-100)) : String(Math.round(field.current * 100) / 100) + field.unit
                 font.pixelSize: field.hero ? Style.font.displayLarge : Style.font.body
                 color: root.highlights[field.controlKey] ? Commons.Color.accent : root.fg
             }
         }
         Row {
             width: parent.width; spacing: Style.space(6)
-            Action { visible: field.hero; width: Style.space(28); text: "−"; enabled: root.supported(field.controlKey); onClicked: field.adjust(-1, false) }
+            Action { visible: field.hero; width: Style.space(28); text: "−"; enabled: field.live; onClicked: field.adjust(-1, false) }
             PanelSlider {
                 id: slider
                 objectName: field.controlKey
                 onActiveFocusChanged: if (activeFocus) { root.focusedControl = field.controlKey; root.ensureVisible(field) }
                 width: parent.width - (field.hero ? Style.space(68) : 0)
                 bar: root.bar
-                enabled: root.supported(field.controlKey)
+                enabled: field.live
                 opacity: enabled ? 1 : 0.4
                 activeFocusOnTab: true
-                minimum: field.minimum; maximum: field.maximum; step: field.increment
-                value: field.current
+                minimum: field.toSlider(field.minimum); maximum: field.toSlider(field.maximum)
+                step: field.logarithmic ? field.logStep : field.increment
+                value: field.toSlider(field.current)
                 fillColor: Commons.Color.accent; knobColor: root.fg
                 trackColor: Util.alpha(root.fg, 0.18)
                 tickCount: field.controlKey === "balance" ? 3 : 0
                 onDraggingChanged: { root.setDragging(field.controlKey, dragging); if (dragging) forceActiveFocus() }
-                onMoved: function(v) { root.edit(field.controlKey, field.snap(v), false) }
-                onReleased: function(v) { root.edit(field.controlKey, field.snap(v), true) }
+                onMoved: function(v) { root.edit(field.controlKey, field.snap(field.fromSlider(v)), false) }
+                onReleased: function(v) { root.edit(field.controlKey, field.snap(field.fromSlider(v)), true) }
                 Keys.onLeftPressed: function(e) { field.adjust(-1, true); e.accepted = true }
                 Keys.onRightPressed: function(e) { field.adjust(1, true); e.accepted = true }
                 Rectangle { anchors.fill: parent; color: "transparent"; border.color: Commons.Color.accent; visible: slider.activeFocus; radius: Style.cornerRadius }
@@ -254,7 +284,7 @@ Panel {
                     onWheel: function(e) { field.adjust(e.angleDelta.y > 0 ? 1 : -1, !!(e.modifiers & Qt.ShiftModifier)); e.accepted = true }
                 }
             }
-            Action { visible: field.hero; width: Style.space(28); text: "+"; enabled: root.supported(field.controlKey); onClicked: field.adjust(1, false) }
+            Action { visible: field.hero; width: Style.space(28); text: "+"; enabled: field.live; onClicked: field.adjust(1, false) }
         }
         Row {
             width: parent.width; visible: field.leftCaption !== ""
@@ -263,11 +293,25 @@ Panel {
         }
         Connections {
             target: root
-            function onOpenedChanged() { if (!root.opened) { slider.dragging = false; slider.liveValue = field.current } }
-            function onAvailableChanged() { if (!root.available) { slider.dragging = false; slider.liveValue = field.current } }
+            function onOpenedChanged() { if (!root.opened) { slider.dragging = false; slider.liveValue = field.toSlider(field.current) } }
+            function onAvailableChanged() { if (!root.available) { slider.dragging = false; slider.liveValue = field.toSlider(field.current) } }
         }
-        function snap(v) { return Math.max(minimum, Math.min(maximum, Math.round(v/increment)*increment)) }
-        function adjust(direction, fine) { root.edit(controlKey, snap(current + direction*(controlKey === "headphones" && !fine ? 1 : increment)), true) }
+        function toSlider(v) { return logarithmic ? Math.log10(v) : v }
+        function fromSlider(v) { return logarithmic ? Math.pow(10, v) : v }
+        function snap(v) {
+            v = Math.max(minimum, Math.min(maximum, v))
+            return quantize === "q" ? root.qSnap(v) : Math.max(minimum, Math.min(maximum, Math.round(v/increment)*increment))
+        }
+        function adjust(direction, fine) {
+            if (!live) return
+            if (logarithmic) {
+                var next = snap(Math.pow(10, Math.log10(current) + direction * logStep))
+                if (next === current) next = snap(current + direction * increment)
+                root.edit(controlKey, next, true)
+                return
+            }
+            root.edit(controlKey, snap(current + direction*(controlKey === "headphones" && !fine ? 1 : increment)), true)
+        }
     }
     component Effect: Item {
         id: effect
@@ -285,6 +329,53 @@ Panel {
             id: switchView; anchors.right: parent.right; anchors.verticalCenter: parent.verticalCenter
             checked: !!root.value(effect.controlKey); interactive: false; trackHeight: Style.space(18)
             foreground: root.fg; accent: Commons.Color.accent
+        }
+    }
+    component EqBand: Column {
+        id: band
+        property int number
+        readonly property string prefix: "eq" + number
+        readonly property int type: root.value(prefix + "Type") !== undefined ? Number(root.value(prefix + "Type")) : 2
+        readonly property bool active: !!root.value(prefix + "On")
+        width: parent.width; spacing: Style.space(8)
+        Effect { controlKey: band.prefix + "On"; label: "Band " + band.number }
+        Column {
+            width: parent.width; spacing: Style.space(8)
+            opacity: band.active ? 1 : 0.55
+            Row {
+                width: parent.width; spacing: Style.space(6)
+                Label { width: parent.width - typePrev.width - typeName.width - typeNext.width - 3 * parent.spacing; text: "Filter"; anchors.verticalCenter: parent.verticalCenter }
+                Action {
+                    id: typePrev; width: Style.space(28); text: "‹"; objectName: band.prefix + "TypePrev"
+                    Accessible.name: "Previous filter type, band " + band.number
+                    enabled: root.supported(band.prefix + "Type") && !root.pending[band.prefix + "Type"]
+                    onClicked: root.edit(band.prefix + "Type", (band.type + 5) % 6, true)
+                }
+                Label {
+                    id: typeName; width: Style.space(92); horizontalAlignment: Text.AlignHCenter; anchors.verticalCenter: parent.verticalCenter
+                    text: root.value(band.prefix + "Type") === undefined ? "—" : root.eqTypes[band.type] || "—"
+                    color: root.highlights[band.prefix + "Type"] ? Commons.Color.accent : root.fg
+                }
+                Action {
+                    id: typeNext; width: Style.space(28); text: "›"; objectName: band.prefix + "TypeNext"
+                    Accessible.name: "Next filter type, band " + band.number
+                    enabled: root.supported(band.prefix + "Type") && !root.pending[band.prefix + "Type"]
+                    onClicked: root.edit(band.prefix + "Type", (band.type + 1) % 6, true)
+                }
+            }
+            SliderField {
+                controlKey: band.prefix + "Freq"; label: "Frequency"; minimum: 20; maximum: 20000; increment: 1
+                logarithmic: true; logStep: Math.log10(2) / 12; display: root.formatHz(current)
+            }
+            SliderField {
+                controlKey: band.prefix + "Gain"; label: "Gain"; minimum: -12; maximum: 12; increment: 0.25; unit: " dB"
+                editable: root.eqHasGain(band.type)
+                display: editable ? "" : "n/a"
+            }
+            SliderField {
+                controlKey: band.prefix + "Q"; label: "Q"; minimum: 0.1; maximum: 10; increment: 0.01
+                logarithmic: true; logStep: 1 / 64; quantize: "q"; display: current.toFixed(2)
+            }
         }
     }
     BarIconButton {
@@ -328,7 +419,7 @@ Panel {
                             Row {
                                 width: parent.width; spacing: Style.space(10)
                                 DeviceIcon { id: headingIcon; width: Style.space(24); height: width; ink: root.fg; anchors.verticalCenter: parent.verticalCenter }
-                                Label { width: parent.width - headingIcon.width - parent.spacing; wrapMode: Text.WordWrap; text: root.page === "controls" ? "Elgato Wave XLR MK.2" : "Hardware settings"; font.pixelSize: Style.font.heading; font.bold: true }
+                                Label { width: parent.width - headingIcon.width - parent.spacing; wrapMode: Text.WordWrap; text: root.page === "controls" ? "Elgato Wave XLR MK.2" : root.page === "eq" ? "Equalizer" : "Hardware settings"; font.pixelSize: Style.font.heading; font.bold: true }
                             }
                             Caption { text: root.disconnected ? "Not connected" : root.stale ? "Reconnecting" : root.state.usb ? "Connected · USB" : "Connected · basic audio"; color: root.disconnected ? root.fg : root.stale ? Commons.Color.urgent : root.fg }
                         }
@@ -336,7 +427,7 @@ Panel {
                     }
                     Caption {
                         width: parent.width; wrapMode: Text.WordWrap; visible: root.helpOpen
-                        text: "M: mute mic. Tab: next control. ← →: adjust. Headphones: 0.25 dB per arrow key; wheel: 1 dB, Shift-wheel: 0.25 dB. Gain: 1 dB. Blend: 0 = mic, 100 = centered, 200 = computer. These are settings, not signal meters. Hardware changes highlight briefly."
+                        text: "M: mute mic. Tab: next control. ← →: adjust. Headphones: 0.25 dB per arrow key; wheel: 1 dB, Shift-wheel: 0.25 dB. Gain: 1 dB. Blend: 0 = mic, 100 = centered, 200 = computer. EQ: frequency steps 1/12 octave; Q steps match the device. These are settings, not signal meters. Hardware changes highlight briefly."
                     }
                     Label {
                         width: parent.width; wrapMode: Text.WordWrap
@@ -371,11 +462,21 @@ Panel {
                             Effect { controlKey: "voiceTune"; label: "Voice Tune" }
                         }
                         SliderField { controlKey: "strength"; label: "Voice Tune strength"; increment: 1; unit: "%"; opacity: root.value("voiceTune") ? 1 : 0.55 }
+                        Action {
+                            id: eqButton; width: parent.width; leftAlign: true; visible: root.state.eq !== undefined
+                            text: "Equalizer  ·  " + (root.value("eq") ? "On" : "Off") + "  →"
+                            onClicked: root.openPage("eq")
+                        }
+                        Caption {
+                            width: parent.width; wrapMode: Text.WordWrap
+                            visible: root.state.usb === true && root.state.eq === undefined
+                            text: root.eqUnavailableText()
+                        }
                         Divider {}
                         Action {
                             id: hardwareButton; width: parent.width; leftAlign: true
                             text: "Hardware settings  ·  48V " + (root.state.phantom === undefined ? "—" : root.state.phantom ? "On" : "Off") + "  →"
-                            onClicked: { root.page = "hardware"; scroll.contentY = 0; Qt.callLater(function() { backButton.forceActiveFocus() }) }
+                            onClicked: root.openPage("hardware")
                         }
                     }
                     Column {
@@ -405,9 +506,29 @@ Panel {
                         Caption { text: "Headphone output" }
                         Divider {}
                         Caption { text: "ABOUT THIS CONTROL PANEL"; font.letterSpacing: 1 }
-                        Caption { width: parent.width; wrapMode: Text.WordWrap; text: "Controls the device’s onboard settings. EQ, lighting, Auto Gain and firmware updates aren’t available here. Wave Link app mixing and VST effects are separate." }
+                        Caption { visible: root.state.firmware !== undefined; text: "Firmware " + root.state.firmware }
+                        Caption { width: parent.width; wrapMode: Text.WordWrap; text: "Controls the device’s onboard settings, including its hardware EQ. Lighting, Auto Gain and firmware updates aren’t available here. Wave Link app mixing and VST effects are separate." }
                         Action { text: "Use mic + headphones as defaults"; bordered: true; enabled: root.available; onClicked: root.send("defaults") }
                         Action { id: backButton; text: "← Back to controls"; foreground: Commons.Color.accent; onClicked: root.back() }
+                    }
+                    Column {
+                        visible: root.available && root.page === "eq"; width: parent.width; spacing: Style.space(14)
+                        Effect { controlKey: "eq"; label: "Equalizer" }
+                        Caption { width: parent.width; wrapMode: Text.WordWrap; text: "Runs on the device’s own processor, so it shapes the mic for every app and stays on after this panel closes. Bands set in Wave Link are kept." }
+                        Divider {}
+                        Column {
+                            width: parent.width; spacing: Style.space(14)
+                            opacity: root.value("eq") ? 1 : 0.7
+                            EqBand { number: 1 }
+                            Divider {}
+                            EqBand { number: 2 }
+                            Divider {}
+                            EqBand { number: 3 }
+                            Divider {}
+                            EqBand { number: 4 }
+                        }
+                        Divider {}
+                        Action { id: eqBackButton; text: "← Back to controls"; foreground: Commons.Color.accent; onClicked: root.back() }
                     }
                     Row {
                         visible: !root.disconnected

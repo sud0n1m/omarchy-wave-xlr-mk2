@@ -22,8 +22,13 @@ FloatingWindow {
  function setDragging(k,d) {}
  function edit(k,v,final) { edits++; calls.push({value:v,final:final}); var n={}; n[k]=v; state=n }
 
+@@FUNCTIONS@@
 @@COMPONENTS@@
- SliderField { id: field; width: 400; controlKey: "headphones"; minimum: -60; maximum: 0; increment: .25 }
+ Column {
+  SliderField { id: field; width: 400; controlKey: "headphones"; minimum: -60; maximum: 0; increment: .25 }
+  SliderField { id: freq; width: 400; controlKey: "eq1Freq"; minimum: 20; maximum: 20000; increment: 1; logarithmic: true; logStep: Math.log10(2) / 12; display: root.formatHz(current) }
+  SliderField { id: q; width: 400; controlKey: "eq1Q"; minimum: 0.1; maximum: 10; increment: 0.01; logarithmic: true; logStep: 1 / 64; quantize: "q" }
+ }
  TestCase {
   name: "WaveActualSliderField"; when: true
   function initTestCase() { console.log("WAVE TESTS START") }
@@ -37,6 +42,9 @@ FloatingWindow {
   function test_dragQuarterSnapFinal() { var item=slider(); mousePress(item,101,item.height/2); mouseMove(item,213,item.height/2,20); mouseRelease(item,213,item.height/2); compare(root.state.headphones*4,Math.round(root.state.headphones*4)); verify(root.calls.length>=2); verify(root.calls[root.calls.length-1].final); compare(item.dragging,false) }
   function test_dragReadNoYank() { var item=slider(); mousePress(item,101,item.height/2); var local=item.liveValue; root.state=({headphones:-5}); wait(20); compare(item.liveValue,local); mouseRelease(item,101,item.height/2); compare(root.state.headphones,field.snap(local)); verify(root.calls[root.calls.length-1].final) }
   function test_externalReadNoWrite() { root.state=({headphones:-23.5}); wait(30); compare(slider().value,-23.5); compare(root.edits,0) }
+  function test_logFrequencyWheelStepsTwelfthOctave() { root.state=({eq1Freq:1000}); wait(20); var item=findChild(freq,"eq1Freq"); compare(item.value,3); mouseWheel(item,item.width/2,item.height/2,0,120); compare(root.state.eq1Freq,1059); compare(root.edits,1) }
+  function test_logQWheelStepsOneDeviceByte() { root.state=({eq1Q:0.698}); wait(20); var item=findChild(q,"eq1Q"); mouseWheel(item,item.width/2,item.height/2,0,120); compare(root.state.eq1Q,0.723); mouseWheel(item,item.width/2,item.height/2,0,-120); mouseWheel(item,item.width/2,item.height/2,0,-120); compare(root.state.eq1Q,0.673); compare(root.edits,3) }
+  function test_logDragReachesBothEnds() { root.state=({eq1Freq:1000}); wait(20); var item=findChild(freq,"eq1Freq"); mousePress(item,item.width/2,item.height/2); mouseMove(item,item.width+40,item.height/2,20); mouseRelease(item,item.width+40,item.height/2); compare(root.state.eq1Freq,20000); mousePress(item,item.width/2,item.height/2); mouseMove(item,-40,item.height/2,20); mouseRelease(item,-40,item.height/2); compare(root.state.eq1Freq,20); verify(root.calls[root.calls.length-1].final) }
   function test_closeCancelsDrag() { var item=slider(); mousePress(item,101,item.height/2); verify(item.dragging); root.opened=false; compare(item.dragging,false); mouseRelease(item,101,item.height/2) }
  }
 }
