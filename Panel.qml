@@ -3,6 +3,7 @@ import QtQuick.Controls as Controls
 import Quickshell
 import Quickshell.Io
 import qs.Commons
+import qs.Commons as Commons
 import qs.Ui
 
 Panel {
@@ -29,7 +30,7 @@ Panel {
     property var queued: ({})
     property var dragging: ({})
     property var highlights: ({})
-    readonly property color fg: Color.popups.text
+    readonly property color fg: Commons.Color.popups.text
     readonly property string family: Style.font.family
     readonly property bool disconnected: state.present === false
     readonly property bool available: state.connected === true && !stale && worker.running
@@ -220,7 +221,7 @@ Panel {
                 id: numeric
                 text: root.value(field.controlKey) === undefined ? "—" : field.controlKey === "balance" ? (field.current === 100 ? "Centered" : field.current < 100 ? "Mic +" + Math.round(100-field.current) : "Computer +" + Math.round(field.current-100)) : String(Math.round(field.current * 100) / 100) + field.unit
                 font.pixelSize: field.hero ? Style.font.displayLarge : Style.font.body
-                color: root.highlights[field.controlKey] ? Color.accent : root.fg
+                color: root.highlights[field.controlKey] ? Commons.Color.accent : root.fg
             }
         }
         Row {
@@ -237,7 +238,7 @@ Panel {
                 activeFocusOnTab: true
                 minimum: field.minimum; maximum: field.maximum; step: field.increment
                 value: field.current
-                fillColor: Color.accent; knobColor: root.fg
+                fillColor: Commons.Color.accent; knobColor: root.fg
                 trackColor: Util.alpha(root.fg, 0.18)
                 tickCount: field.controlKey === "balance" ? 3 : 0
                 onDraggingChanged: { root.setDragging(field.controlKey, dragging); if (dragging) forceActiveFocus() }
@@ -245,7 +246,7 @@ Panel {
                 onReleased: function(v) { root.edit(field.controlKey, field.snap(v), true) }
                 Keys.onLeftPressed: function(e) { field.adjust(-1, true); e.accepted = true }
                 Keys.onRightPressed: function(e) { field.adjust(1, true); e.accepted = true }
-                Rectangle { anchors.fill: parent; color: "transparent"; border.color: Color.accent; visible: slider.activeFocus; radius: Style.cornerRadius }
+                Rectangle { anchors.fill: parent; color: "transparent"; border.color: Commons.Color.accent; visible: slider.activeFocus; radius: Style.cornerRadius }
                 MouseArea {
                     anchors.fill: parent
                     acceptedButtons: Qt.NoButton
@@ -283,7 +284,7 @@ Panel {
         ToggleSwitch {
             id: switchView; anchors.right: parent.right; anchors.verticalCenter: parent.verticalCenter
             checked: !!root.value(effect.controlKey); interactive: false; trackHeight: Style.space(18)
-            foreground: root.fg; accent: Color.accent
+            foreground: root.fg; accent: Commons.Color.accent
         }
     }
     BarIconButton {
@@ -293,7 +294,7 @@ Panel {
         text: ""
         iconComponent: Component {
             DeviceIcon {
-                ink: root.state.mute ? Color.urgent : button.foreground
+                ink: root.state.mute ? Commons.Color.urgent : button.foreground
                 muted: root.state.mute === true
             }
         }
@@ -329,7 +330,7 @@ Panel {
                                 DeviceIcon { id: headingIcon; width: Style.space(24); height: width; ink: root.fg; anchors.verticalCenter: parent.verticalCenter }
                                 Label { width: parent.width - headingIcon.width - parent.spacing; wrapMode: Text.WordWrap; text: root.page === "controls" ? "Elgato Wave XLR MK.2" : "Hardware settings"; font.pixelSize: Style.font.heading; font.bold: true }
                             }
-                            Caption { text: root.disconnected ? "Not connected" : root.stale ? "Reconnecting" : root.state.usb ? "Connected · USB" : "Connected · basic audio"; color: root.disconnected ? root.fg : root.stale ? Color.urgent : root.fg }
+                            Caption { text: root.disconnected ? "Not connected" : root.stale ? "Reconnecting" : root.state.usb ? "Connected · USB" : "Connected · basic audio"; color: root.disconnected ? root.fg : root.stale ? Commons.Color.urgent : root.fg }
                         }
                         Action { id: helpButton; visible: !root.disconnected; text: "?"; tooltipText: "Controls and keyboard help"; bordered: true; onClicked: root.helpOpen = !root.helpOpen }
                     }
@@ -341,7 +342,7 @@ Panel {
                         width: parent.width; wrapMode: Text.WordWrap
                         visible: !root.disconnected && (root.error !== "" || root.transportError !== "" || root.stale)
                         text: root.error || root.transportError || "Last known settings · waiting for fresh device state"
-                        color: Color.urgent; font.pixelSize: Style.font.caption
+                        color: Commons.Color.urgent; font.pixelSize: Style.font.caption
                     }
                     Caption {
                         width: parent.width; wrapMode: Text.WordWrap; visible: root.disconnected
@@ -352,7 +353,7 @@ Panel {
                         Row {
                             width: parent.width
                             Caption { width: parent.width - muteButton.width; text: "MICROPHONE"; anchors.verticalCenter: parent.verticalCenter; font.letterSpacing: 1 }
-                            Action { id: muteButton; text: root.value("mute") ? "Unmute mic  M" : "Mute mic  M"; foreground: root.value("mute") ? Color.urgent : root.fg; bordered: true; enabled: root.supported("mute") && !root.pending.mute; onClicked: root.toggleSetting("mute") }
+                            Action { id: muteButton; text: root.value("mute") ? "Unmute mic  M" : "Mute mic  M"; foreground: root.value("mute") ? Commons.Color.urgent : root.fg; bordered: true; enabled: root.supported("mute") && !root.pending.mute; onClicked: root.toggleSetting("mute") }
                         }
                         SliderField { controlKey: "gain"; label: "Gain"; minimum: 0; maximum: 80; increment: 1; unit: " dB"; hero: true; leftCaption: "0 dB"; rightCaption: "80 dB" }
                         Divider {}
@@ -392,11 +393,11 @@ Panel {
                         Caption { width: parent.width; wrapMode: Text.WordWrap; text: "Power for microphones that need it. Changing this may briefly mute the mic." }
                         Column {
                             visible: root.phantomArmed; width: parent.width; spacing: Style.space(10)
-                            Label { width: parent.width; wrapMode: Text.WordWrap; text: "Turn 48V " + (root.phantomTarget ? "on" : "off") + "? Use phantom power only when your microphone requires it."; color: Color.urgent }
+                            Label { width: parent.width; wrapMode: Text.WordWrap; text: "Turn 48V " + (root.phantomTarget ? "on" : "off") + "? Use phantom power only when your microphone requires it."; color: Commons.Color.urgent }
                             Row {
                                 spacing: Style.space(8)
                                 Action { id: cancelPhantom; text: "Cancel"; bordered: true; onClicked: { root.phantomArmed = false; phantomButton.forceActiveFocus() } }
-                                Action { text: "Turn " + (root.phantomTarget ? "on" : "off"); bordered: true; foreground: Color.urgent; enabled: root.supported("phantom"); onClicked: { root.edit("phantom", root.phantomTarget ? 1 : 0, true); root.phantomArmed = false; phantomButton.forceActiveFocus() } }
+                                Action { text: "Turn " + (root.phantomTarget ? "on" : "off"); bordered: true; foreground: Commons.Color.urgent; enabled: root.supported("phantom"); onClicked: { root.edit("phantom", root.phantomTarget ? 1 : 0, true); root.phantomArmed = false; phantomButton.forceActiveFocus() } }
                             }
                         }
                         Divider {}
@@ -406,7 +407,7 @@ Panel {
                         Caption { text: "ABOUT THIS CONTROL PANEL"; font.letterSpacing: 1 }
                         Caption { width: parent.width; wrapMode: Text.WordWrap; text: "Controls the device’s onboard settings. EQ, lighting, Auto Gain and firmware updates aren’t available here. Wave Link app mixing and VST effects are separate." }
                         Action { text: "Use mic + headphones as defaults"; bordered: true; enabled: root.available; onClicked: root.send("defaults") }
-                        Action { id: backButton; text: "← Back to controls"; foreground: Color.accent; onClicked: root.back() }
+                        Action { id: backButton; text: "← Back to controls"; foreground: Commons.Color.accent; onClicked: root.back() }
                     }
                     Row {
                         visible: !root.disconnected
