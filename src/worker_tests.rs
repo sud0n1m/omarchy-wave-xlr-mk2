@@ -1006,57 +1006,95 @@ fn unchanged_reads_skip_decoding_and_heartbeats_omit_state() {
 }
 
 #[test]
-fn control_events_replace_closed_polling_and_sample_immediately() {
+fn control_events_make_the_closed_panel_quiet_and_sample_immediately() {
     let (mut worker, now, shared) = fixture();
     worker.sample(true);
     worker.take_events();
     assert_eq!(worker.next_poll, 1500, "no events: 500 ms closed polling");
+    assert_eq!(worker.wait_ms(), Some(500));
     worker.set_events(true);
     assert_eq!(worker.next_poll, 1500, "enabling never delays a due poll");
+    // Going quiet is announced at once, with no USB read, so the shell stops
+    // its watchdog before it misses a heartbeat.
+    assert_eq!(worker.wait_ms(), Some(0));
+    worker.tick();
+    let frames = worker.take_events();
+    assert_eq!(frames.len(), 1);
+    assert_eq!(frames[0]["quiet"], true);
+    assert!(frames[0].get("state").is_none());
+    assert_eq!(shared.borrow().reads, 1);
+    // The poll that was already due still runs once; after it the worker
+    // sleeps with no timeout at all.
     now.set(1500);
     worker.tick();
     assert_eq!(shared.borrow().reads, 2);
-    assert_eq!(
-        worker.next_poll,
-        1500 + Worker::<FakePlatform, fn() -> u64>::EVENT_SAFETY_POLL_MS
-    );
-    // Heartbeats continue every second without USB reads.
-    for instant in [2500, 3500, 4500] {
+    assert!(worker.take_events().is_empty());
+    assert_eq!(worker.next_poll, u64::MAX);
+    assert_eq!(worker.wait_ms(), None, "no heartbeat, no safety poll");
+    for instant in [2500, 10_000, 3_600_000] {
         now.set(instant);
         worker.tick();
-        assert_eq!(worker.take_events().len(), 1);
+        assert!(
+            worker.take_events().is_empty(),
+            "nothing to say, nothing sent"
+        );
     }
     assert_eq!(shared.borrow().reads, 2, "no polling between events");
     // A knob turn is reported by the device and sampled at once.
     shared.borrow_mut().blocks.settings[0] = 52;
-    now.set(4600);
     worker.device_signaled(crate::control_events::SETTINGS);
     assert_eq!(worker.wait_ms(), Some(0));
     worker.tick();
     let events = worker.take_events();
     assert_eq!(events[0]["patch"], json!({"gain":52}));
+    assert_eq!(events[0]["quiet"], true);
     assert_eq!(
         shared.borrow().reads,
         2,
         "an event never forces a full read"
     );
     assert_eq!(shared.borrow().block_reads, [4], "only the reported block");
-    assert_eq!(
-        worker.next_poll,
-        1500 + Worker::<FakePlatform, fn() -> u64>::EVENT_SAFETY_POLL_MS,
-        "event samples keep the safety-poll schedule"
+    assert_eq!(worker.wait_ms(), None, "back to sleep after the event");
+    // An open panel heartbeats and polls at 50 ms for vendor-only dial changes.
+    now.set(3_600_100);
+    worker.command(json!({"id":1,"op":"poll","intervalMs":50}));
+    let frames = worker.take_events();
+    assert!(
+        frames[0].get("quiet").is_none(),
+        "open frames are not quiet"
     );
-    // An open panel still polls at 50 ms for vendor-only dial changes.
-    command(&mut worker, json!({"id":1,"op":"poll","intervalMs":50}));
-    assert_eq!(worker.next_poll, 4650);
+    assert_eq!(worker.next_poll, 3_600_150);
+    assert_eq!(worker.wait_ms(), Some(50));
     command(&mut worker, json!({"id":2,"op":"poll","intervalMs":500}));
-    assert_eq!(
-        worker.next_poll,
-        4600 + Worker::<FakePlatform, fn() -> u64>::EVENT_SAFETY_POLL_MS
-    );
-    // Losing the subscription restores 500 ms polling right away.
+    assert_eq!(worker.wait_ms(), None, "closing goes quiet again");
+    // Losing the subscription restores 500 ms polling and heartbeats right away.
     worker.set_events(false);
-    assert_eq!(worker.next_poll, 5100);
+    assert_eq!(worker.next_poll, 3_600_600);
+    assert_eq!(worker.wait_ms(), Some(0), "a heartbeat is overdue at once");
+    worker.tick();
+    let beat = worker.take_events();
+    assert_eq!(beat.len(), 1);
+    assert!(beat[0].get("quiet").is_none());
+}
+
+#[test]
+fn a_failed_read_ends_quiet_mode() {
+    let (mut worker, now, shared) = fixture();
+    worker.set_events(true);
+    worker.sample(true);
+    worker.take_events();
+    assert_eq!(worker.wait_ms(), None);
+    shared.borrow_mut().read_error = true;
+    now.set(2000);
+    worker.device_signaled(crate::control_events::SETTINGS);
+    worker.tick();
+    let frames = worker.take_events();
+    assert_eq!(frames[0]["state"]["stale"], true);
+    assert!(
+        frames[0].get("quiet").is_none(),
+        "the shell re-arms its watchdog"
+    );
+    assert!(worker.wait_ms().is_some(), "reconnecting keeps a timeout");
 }
 
 #[test]
@@ -1102,10 +1140,11 @@ fn writes_use_the_cache_and_their_echo_reads_one_block() {
     assert!(worker.take_events().is_empty());
     assert_eq!(shared.borrow().block_reads, [5, 5, 5]);
     assert_eq!(shared.borrow().reads, 1);
-    // The next full poll catches the change in the uncached block.
-    now.set(worker.next_poll);
-    worker.tick();
-    assert_eq!(worker.take_events()[0]["patch"], json!({"balance":120}));
+    // Closed and quiet, nothing polls the uncached block; opening the panel
+    // forces the full read that catches it.
+    assert_eq!(worker.wait_ms(), None);
+    let result = command(&mut worker, json!({"id":9,"op":"poll","intervalMs":50}));
+    assert_eq!(result["state"]["balance"], 120);
     assert_eq!(shared.borrow().reads, 2);
     // Without a cache, a write reads every block first.
     let reads = shared.borrow().reads;

@@ -49,6 +49,8 @@ pub struct Worker<P, C> {
     next_connect: u64,
     backoff: u64,
     last_emit: Option<u64>,
+    /// Whether the last frame told the shell to expect no heartbeats.
+    announced_quiet: bool,
     sampled_at: u64,
     seq: u64,
     device: Option<Box<dyn Device>>,
@@ -79,6 +81,7 @@ impl<P: Platform, C: Fn() -> u64> Worker<P, C> {
             next_connect: 0,
             backoff: 250,
             last_emit: None,
+            announced_quiet: false,
             sampled_at: 0,
             seq: 0,
             device: None,
@@ -100,13 +103,16 @@ impl<P: Platform, C: Fn() -> u64> Worker<P, C> {
     pub fn take_events(&mut self) -> Vec<Value> {
         std::mem::take(&mut self.events)
     }
-    /// Emit a state frame. Full state goes out when it changed or a command
-    /// asked for it; an unchanged heartbeat is a small liveness-only frame.
     /// Emit a state frame: the full state, only the changed fields, or (for
-    /// an unchanged heartbeat) no state at all.
+    /// an unchanged heartbeat) no state at all. A quiet frame tells the shell
+    /// that no heartbeats follow until something changes.
     fn emit(&mut self, frame: Frame, now: u64) {
         self.seq += 1;
         let mut event = json!({"type":"state","seq":self.seq,"sampledAtMs":self.sampled_at});
+        self.announced_quiet = self.quiet();
+        if self.announced_quiet {
+            event["quiet"] = true.into();
+        }
         match frame {
             Frame::Full => event["state"] = self.state.clone(),
             Frame::Patch(patch) => event["patch"] = Value::Object(patch),
@@ -115,8 +121,19 @@ impl<P: Platform, C: Fn() -> u64> Worker<P, C> {
         self.events.push(event);
         self.last_emit = Some(now);
     }
+    /// Panel closed, device connected and reporting its own changes: the bar
+    /// shows only gain and mute, which arrive as control events, so the
+    /// worker sleeps until an event, a command or a hotplug. No heartbeat and
+    /// no safety read; the panel's next open forces a full read.
+    fn quiet(&self) -> bool {
+        self.pushed && self.interval == 500 && self.device.is_some() && steady(&self.state)
+    }
     fn heartbeat_due(&self, now: u64) -> bool {
-        self.attached != Some(false) && self.last_emit.is_none_or(|t| now.saturating_sub(t) >= 1000)
+        // Going quiet, or leaving it, is announced at once.
+        let quiet = self.quiet();
+        self.attached != Some(false)
+            && (quiet != self.announced_quiet
+                || !quiet && self.last_emit.is_none_or(|t| now.saturating_sub(t) >= 1000))
     }
     fn publish(&mut self, state: Value, force: bool, sampled: bool) {
         let now = self.now();
@@ -198,11 +215,13 @@ impl<P: Platform, C: Fn() -> u64> Worker<P, C> {
             }
         }
     }
-    /// Slow safety poll while closed when the device pushes its own changes.
+    /// With events and an open panel, every block is still read this often.
     pub const EVENT_SAFETY_POLL_MS: u64 = 5000;
-    /// How often every block is read.
+    /// How often every block is read; never while quiet.
     fn poll_interval(&self) -> u64 {
-        if self.pushed {
+        if self.quiet() {
+            u64::MAX
+        } else if self.pushed {
             Self::EVENT_SAFETY_POLL_MS
         } else {
             self.interval
@@ -228,7 +247,7 @@ impl<P: Platform, C: Fn() -> u64> Worker<P, C> {
         self.pushed = active;
         if self.device.is_some() {
             let now = self.now();
-            self.full_due = self.full_due.min(now + self.poll_interval());
+            self.full_due = self.full_due.min(now.saturating_add(self.poll_interval()));
             self.dial_due = self.dial_due.min(now + self.interval);
             self.next_poll = self.next_poll.min(self.device_due());
         }
@@ -334,7 +353,7 @@ impl<P: Platform, C: Fn() -> u64> Worker<P, C> {
         }
         self.next_poll = if self.device.is_some() {
             if !partial {
-                self.full_due = now + self.poll_interval();
+                self.full_due = now.saturating_add(self.poll_interval());
             }
             if !partial || dial {
                 self.dial_due = now + self.interval;
@@ -360,11 +379,18 @@ impl<P: Platform, C: Fn() -> u64> Worker<P, C> {
         if self.attached == Some(false) {
             return None;
         }
-        Some(
-            self.next_poll
-                .min(self.last_emit.map_or(0, |t| t + 1000))
-                .saturating_sub(self.now()),
-        )
+        let quiet = self.quiet();
+        let heartbeat = if quiet != self.announced_quiet {
+            0
+        } else if quiet {
+            u64::MAX
+        } else {
+            self.last_emit.map_or(0, |t| t + 1000)
+        };
+        match self.next_poll.min(heartbeat) {
+            u64::MAX => None,
+            due => Some(due.saturating_sub(self.now())),
+        }
     }
     fn execute(&mut self, message: &Value) -> Result<(), String> {
         let id = &message["id"];
