@@ -10,8 +10,9 @@ Wave XLR device icon beside the stock audio control. The icon follows the bar
 color, dims on loss of connection, and uses the theme's urgent color plus a slash
 when muted. The panel inherits the live Omarchy theme, font, spacing and scale.
 
-Built with native Omarchy controls: prominent gain, monitoring, aligned onboard-effect
-switches, and a separate hardware-settings page. Some native details (square
+Built with native Omarchy controls: a header that never scrolls away, prominent gain,
+monitoring, a grid of onboard-effect switches, and Equalizer and Hardware pages
+reached from matching rows (the Equalizer row previews the current curve). Some native details (square
 switches, borders, sizing) intentionally follow the shell rather than the mockup.
 
 ![Elgato Wave XLR MK.2 controls and device icon inheriting the Omarchy theme](preview.png)
@@ -28,13 +29,16 @@ switches, borders, sizing) intentionally follow the shell rather than the mockup
 - Hardware EQ (firmware 1.0.15 or later): the four-band equalizer Wave Link
   runs on the unit's own processor. Master switch, and per band: on/off, filter
   type (high-pass, low shelf, bell, notch, high shelf, low-pass), frequency
-  20 Hz–20 kHz, gain ±12 dB in 0.25 dB steps, and Q 0.1–10. Frequency and Q
+  20 Hz–20 kHz, gain ±12 dB in 0.25 dB steps, and Q 0.1–10. The page draws the
+  summed response of the enabled bands (RBJ biquads at 48 kHz) with a numbered
+  point per band: drag a point to set frequency and gain, scroll to change Q.
+  Band tabs pick which band the editor below shows. Its frequency and Q
   sliders are logarithmic; arrows and the wheel step 1/12 octave and one
-  device Q step. Gain is disabled for the types that ignore it. Bands set in
+  device Q step. Types that ignore gain show no gain control. Bands set in
   Wave Link are shown and kept. Wave Link leaves the EQ running when it quits,
   so a unit last used on Windows or macOS may arrive with it switched on.
-- Hardware settings shows the firmware version and contains the explicit “Use mic + headphones as defaults”
-  action. Loading the plugin changes neither defaults nor hardware settings.
+- The Hardware page shows the firmware version and contains the explicit “Set as default”
+  action for system audio. Loading the plugin changes neither defaults nor hardware settings.
 - Help explains controls and keyboard behavior. Values are settings, not meters.
 - Compressor/expander parameter tuning (threshold, ratio, attack, release),
   LED customization, Auto Gain, gain-lock policy, firmware upgrades, Wave Link
@@ -248,8 +252,10 @@ and checks private-copy cleanup. It runs a harmless fixture without sudo.
 
 The optional UI tests are run by Rust and exercise JavaScript functions and slider
 components extracted from the actual `Panel.qml`, including the logarithmic
-frequency and Q sliders. The slider tests use an isolated
-offscreen shell and never start the device worker. These two tests are explicitly
+frequency and Q sliders, dragging and scrolling EQ graph points, and the EQ
+response math against known filter values (bell peak, −3 dB cutoffs, shelf
+plateaus, notch depth). The QML tests use an isolated
+offscreen shell and never start the device worker. These three tests are explicitly
 ignored by default so the worker suite can run without desktop dependencies.
 
 The original Python implementation and its tests are available in Git history.

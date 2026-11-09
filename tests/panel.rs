@@ -80,6 +80,19 @@ fn panel_state_efficiency() {
 }
 
 #[test]
+#[ignore = "requires Node.js; run cargo test --test panel -- --ignored"]
+fn panel_eq_curve_math() {
+    let workspace = Workspace::new("eq-curve-test");
+    let output = workspace
+        .run(Command::new("node").arg(Path::new(ROOT).join("tests/fixtures/panel_eq_curve.cjs")));
+    assert!(
+        output.contains("PASS EQ curve math"),
+        "Missing test completion:\n{output}"
+    );
+    print!("{output}");
+}
+
+#[test]
 #[ignore = "requires Omarchy/Quickshell and QtTest; run cargo test --test panel -- --ignored"]
 fn panel_slider_gestures() {
     let source = fs::read_to_string(Path::new(ROOT).join("Panel.qml")).unwrap();
@@ -87,14 +100,14 @@ fn panel_slider_gestures() {
         .find("    component Label:")
         .expect("Label component");
     let end = source[start..]
-        .find("    component Effect:")
-        .expect("Effect component")
+        .find("    component BandTab:")
+        .expect("BandTab component")
         + start;
     let helpers = source
         .find("    readonly property var eqTypes:")
         .expect("EQ helpers");
     let helpers_end = source[helpers..]
-        .find("    function eqUnavailableText()")
+        .find("    function openPage(")
         .expect("EQ helpers end")
         + helpers;
     let harness = include_str!("fixtures/panel_slider.qml.in")
@@ -127,8 +140,8 @@ fn panel_slider_gestures() {
         .split_whitespace()
         .take(2)
         .collect();
-    // Ten gestures plus initTestCase must all run; an empty suite cannot pass.
-    assert_eq!(counts, ["11", "0"], "Unexpected QtTest counts:\n{output}");
+    // Thirteen gestures plus initTestCase must all run; an empty suite cannot pass.
+    assert_eq!(counts, ["14", "0"], "Unexpected QtTest counts:\n{output}");
     for line in output.lines().filter(|line| line.contains("WAVE ")) {
         println!("{line}");
     }
