@@ -167,7 +167,19 @@ fn bootstrap_rejects_tampering_and_pins_running_image_across_path_replacement() 
     let dir = Sandbox::new();
     let executable = dir.0.join("worker");
     fs::copy("/usr/bin/sleep", &executable).unwrap();
-    let child = ChildGuard(Command::new(&executable).arg("30").spawn().unwrap());
+    // A parallel test forking while the copy's write handle is open makes exec
+    // fail with ETXTBSY until that child execs; retry only that error.
+    let child = ChildGuard(
+        (0..200)
+            .find_map(|_| match Command::new(&executable).arg("30").spawn() {
+                Err(error) if error.raw_os_error() == Some(libc::ETXTBSY) => {
+                    std::thread::sleep(std::time::Duration::from_millis(5));
+                    None
+                }
+                result => Some(result.unwrap()),
+            })
+            .expect("executable stayed busy"),
+    );
     let pinned = format!("/proc/{}/exe", child.0.id());
     let digest = executable_digest(&pinned).unwrap();
     // Model replacement of the user-writable checkout while authentication waits.

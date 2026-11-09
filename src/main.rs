@@ -1,3 +1,4 @@
+mod control_events;
 mod device;
 mod framing;
 mod hotplug;
@@ -85,7 +86,15 @@ fn run() -> Result<(), String> {
     }
     let mut buf = [0u8; 4096];
     let mut framer = framing::Framer::default();
+    let mut events: Option<control_events::ControlEvents> = None;
+    let mut open_events = true;
     loop {
+        // One attempt per hardware change: no retry loop while it is missing.
+        if events.is_none() && open_events && owner.attached() == Some(true) {
+            open_events = false;
+            events = control_events::ControlEvents::open();
+            owner.set_events(events.is_some());
+        }
         owner.tick();
         for event in owner.take_events() {
             if let Err(e) = emit(&event) {
@@ -103,6 +112,12 @@ fn run() -> Result<(), String> {
             },
             libc::pollfd {
                 fd: hotplug.fd(),
+                events: libc::POLLIN,
+                revents: 0,
+            },
+            libc::pollfd {
+                // poll ignores negative descriptors.
+                fd: events.as_ref().map_or(-1, |watch| watch.fd()),
                 events: libc::POLLIN,
                 revents: 0,
             },
@@ -130,7 +145,23 @@ fn run() -> Result<(), String> {
         if pfds[1].revents & (libc::POLLERR | libc::POLLHUP | libc::POLLNVAL) != 0 {
             return Err("USB event monitor stopped".into());
         }
+        if pfds[2].revents & (libc::POLLERR | libc::POLLHUP | libc::POLLNVAL) != 0 {
+            events = None;
+            owner.set_events(false);
+        } else if pfds[2].revents & libc::POLLIN != 0
+            && let Some(watch) = events.as_mut()
+        {
+            match watch.drain() {
+                control_events::Drained::Changed(blocks) => owner.device_signaled(blocks),
+                control_events::Drained::Quiet => {}
+                control_events::Drained::Closed => {
+                    events = None;
+                    owner.set_events(false);
+                }
+            }
+        }
         if pfds[1].revents & libc::POLLIN != 0 && hotplug.changed() {
+            open_events = true;
             owner.hardware_changed();
             // Deliver the wake notice before tick()/commands can touch USB.
             for event in owner.take_events() {

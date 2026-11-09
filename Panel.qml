@@ -136,7 +136,11 @@ Panel {
                 if (msg.seq !== undefined && msg.seq <= sequence) return
                 if (msg.seq !== undefined) sequence = msg.seq
                 if (msg.state) acceptState(msg.state)
-                else { lastSeen = Date.now(); syncWatchdog(state) } // Liveness-only heartbeat: nothing changed.
+                else if (msg.patch) { // Only the changed fields of a steady connected state.
+                    var merged = copy(state)
+                    for (var field in msg.patch) merged[field] = msg.patch[field]
+                    acceptState(merged)
+                } else { lastSeen = Date.now(); syncWatchdog(state) } // Liveness-only heartbeat: nothing changed.
             } else if (msg.type === "result") {
                 if (msg.id === defaultsId) { defaultsId = -1; defaultsDeadline = 0 }
                 var r = copy(requests); delete r[msg.id]; requests = r

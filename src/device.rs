@@ -514,6 +514,34 @@ pub fn eq_unavailable(reason: &str) -> String {
 pub trait Device {
     fn read(&mut self) -> Result<Blocks, String>;
     fn write(&mut self, block: u16, data: &[u8]) -> Result<(), String>;
+    /// Refresh one block in place, leaving the others as they are.
+    fn read_one(&mut self, block: u16, blocks: &mut Blocks) -> Result<(), String> {
+        let fresh = self.read()?;
+        set_block(blocks, block, &block_bytes(&fresh, block))
+    }
+}
+
+/// Replace one block's bytes.
+pub fn set_block(blocks: &mut Blocks, block: u16, bytes: &[u8]) -> Result<(), String> {
+    let target: &mut [u8] = match block {
+        1 => &mut blocks.blend,
+        4 => &mut blocks.settings,
+        5 => &mut blocks.headphones,
+        _ => return Err("Unknown USB control block".into()),
+    };
+    if target.len() != bytes.len() {
+        return Err(format!("USB block {block}: wrong length"));
+    }
+    target.copy_from_slice(bytes);
+    Ok(())
+}
+
+/// The vendor block a validated command writes.
+pub fn block_of(key: &str, value: f64) -> Result<u16, String> {
+    Ok(match parse(key, value)? {
+        Edit::Flag { block, .. } | Edit::Byte { block, .. } => block,
+        Edit::Band { .. } => 4,
+    })
 }
 
 #[derive(Debug)]
@@ -619,6 +647,16 @@ impl Device for UsbDevice {
         };
         validate(&blocks)?;
         Ok(blocks)
+    }
+
+    fn read_one(&mut self, block: u16, blocks: &mut Blocks) -> Result<(), String> {
+        match block {
+            1 => blocks.blend = self.read_block(1)?,
+            4 => blocks.settings = self.read_block(4)?,
+            5 => blocks.headphones = self.read_block(5)?,
+            _ => return Err("Unknown USB control block".into()),
+        }
+        validate(blocks)
     }
 
     fn write(&mut self, block: u16, data: &[u8]) -> Result<(), String> {

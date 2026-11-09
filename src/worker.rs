@@ -1,3 +1,4 @@
+use crate::control_events::{BLEND, HEADPHONES, SETTINGS};
 use crate::device::{self, Device, OpenError};
 use serde_json::{Value, json};
 
@@ -7,6 +8,38 @@ pub trait Platform {
     fn present(&self) -> bool;
     fn alsa(&mut self, edit: Option<(&str, f64)>) -> Result<Value, String>;
     fn defaults(&mut self) -> Result<(), String>;
+}
+
+enum Frame {
+    Full,
+    Patch(serde_json::Map<String, Value>),
+    Liveness,
+}
+
+fn steady(state: &Value) -> bool {
+    state["connected"] == true && state["stale"] == false
+}
+
+/// The changed fields between two steady states with identical keys; None when
+/// a whole frame is needed.
+fn patch(old: &Value, new: &Value) -> Option<serde_json::Map<String, Value>> {
+    let (Value::Object(old_map), Value::Object(new_map)) = (old, new) else {
+        return None;
+    };
+    if !steady(old) || !steady(new) || old_map.len() != new_map.len() {
+        return None;
+    }
+    let mut changed = serde_json::Map::new();
+    for (key, value) in new_map {
+        match old_map.get(key) {
+            Some(previous) if previous == value => {}
+            Some(_) => {
+                changed.insert(key.clone(), value.clone());
+            }
+            None => return None,
+        }
+    }
+    Some(changed)
 }
 
 pub struct Worker<P, C> {
@@ -23,6 +56,15 @@ pub struct Worker<P, C> {
     decoded: Option<device::Blocks>,
     fallback: bool,
     attached: Option<bool>,
+    /// Device-side changes arrive as ALSA control events, so the closed panel
+    /// needs only a slow safety poll.
+    pushed: bool,
+    /// Blocks the device reported changed since the last sample (control_events bits).
+    dirty: u8,
+    /// When the next full three-block read is due; event samples read less.
+    full_due: u64,
+    /// With events and an open panel: when the dial blocks are next read.
+    dial_due: u64,
     platform: P,
     clock: C,
     events: Vec<Value>,
@@ -43,6 +85,10 @@ impl<P: Platform, C: Fn() -> u64> Worker<P, C> {
             decoded: None,
             fallback: false,
             attached: None,
+            pushed: false,
+            dirty: 0,
+            full_due: 0,
+            dial_due: 0,
             platform,
             clock,
             events: Vec::new(),
@@ -56,11 +102,15 @@ impl<P: Platform, C: Fn() -> u64> Worker<P, C> {
     }
     /// Emit a state frame. Full state goes out when it changed or a command
     /// asked for it; an unchanged heartbeat is a small liveness-only frame.
-    fn emit(&mut self, full: bool, now: u64) {
+    /// Emit a state frame: the full state, only the changed fields, or (for
+    /// an unchanged heartbeat) no state at all.
+    fn emit(&mut self, frame: Frame, now: u64) {
         self.seq += 1;
         let mut event = json!({"type":"state","seq":self.seq,"sampledAtMs":self.sampled_at});
-        if full {
-            event["state"] = self.state.clone();
+        match frame {
+            Frame::Full => event["state"] = self.state.clone(),
+            Frame::Patch(patch) => event["patch"] = Value::Object(patch),
+            Frame::Liveness => {}
         }
         self.events.push(event);
         self.last_emit = Some(now);
@@ -74,10 +124,20 @@ impl<P: Platform, C: Fn() -> u64> Worker<P, C> {
             self.sampled_at = now;
         }
         self.decoded = None;
-        let changed = state != self.state;
+        // Between two steady connected states with the same fields, send only
+        // what changed; anything else (and every forced frame) is sent whole.
+        let frame = match patch(&self.state, &state) {
+            Some(patch) if patch.is_empty() => None,
+            Some(patch) if !force => Some(Frame::Patch(patch)),
+            Some(_) => Some(Frame::Full),
+            None => (state != self.state).then_some(Frame::Full),
+        };
         self.state = state;
-        if changed || force || self.heartbeat_due(now) {
-            self.emit(changed || force, now);
+        match frame {
+            Some(frame) => self.emit(frame, now),
+            None if force => self.emit(Frame::Full, now),
+            None if self.heartbeat_due(now) => self.emit(Frame::Liveness, now),
+            None => {}
         }
     }
     /// The state is unchanged: no clone, comparison or full serialization.
@@ -86,8 +146,10 @@ impl<P: Platform, C: Fn() -> u64> Worker<P, C> {
         if sampled {
             self.sampled_at = now;
         }
-        if force || self.heartbeat_due(now) {
-            self.emit(force, now);
+        if force {
+            self.emit(Frame::Full, now);
+        } else if self.heartbeat_due(now) {
+            self.emit(Frame::Liveness, now);
         }
     }
     fn failed(&mut self, error: String) {
@@ -136,6 +198,49 @@ impl<P: Platform, C: Fn() -> u64> Worker<P, C> {
             }
         }
     }
+    /// Slow safety poll while closed when the device pushes its own changes.
+    pub const EVENT_SAFETY_POLL_MS: u64 = 5000;
+    /// How often every block is read.
+    fn poll_interval(&self) -> u64 {
+        if self.pushed {
+            Self::EVENT_SAFETY_POLL_MS
+        } else {
+            self.interval
+        }
+    }
+    /// With events, an open panel still polls the blocks the dial changes
+    /// without an event (monitor blend, Voice Tune strength) at its interval.
+    fn dial_polling(&self) -> bool {
+        self.pushed && self.interval == 50
+    }
+    fn device_due(&self) -> u64 {
+        if self.dial_polling() {
+            self.full_due.min(self.dial_due)
+        } else {
+            self.full_due
+        }
+    }
+    pub fn attached(&self) -> Option<bool> {
+        self.attached
+    }
+    /// Whether a control-event subscription is active.
+    pub fn set_events(&mut self, active: bool) {
+        self.pushed = active;
+        if self.device.is_some() {
+            let now = self.now();
+            self.full_due = self.full_due.min(now + self.poll_interval());
+            self.dial_due = self.dial_due.min(now + self.interval);
+            self.next_poll = self.next_poll.min(self.device_due());
+        }
+    }
+    /// The device reported a change in these blocks: read just those on the
+    /// next tick, without waiting for the poll interval.
+    pub fn device_signaled(&mut self, blocks: u8) {
+        if self.attached != Some(false) && self.device.is_some() {
+            self.dirty |= blocks;
+            self.next_poll = self.next_poll.min(self.now());
+        }
+    }
     pub fn sample(&mut self, force: bool) {
         if self.attached.is_none() {
             match self.platform.attached() {
@@ -179,8 +284,28 @@ impl<P: Platform, C: Fn() -> u64> Worker<P, C> {
                 }
             }
         }
+        // Forced samples, the full-poll schedule and a missing cache read all
+        // three blocks. Otherwise only the blocks an event reported, plus the
+        // dial blocks when their poll is due, are refreshed on the cache.
+        let now = self.now();
+        let dirty = std::mem::take(&mut self.dirty);
+        let full = force || self.decoded.is_none() || now >= self.full_due;
+        let dial = !full && self.dial_polling() && now >= self.dial_due;
+        let wanted = dirty | if dial { BLEND | SETTINGS } else { 0 };
+        let partial = !full && wanted != 0;
         let read = if let Some(device) = self.device.as_mut() {
-            Some(match device.read() {
+            let fresh = match self.decoded.as_ref() {
+                Some(cached) if partial => {
+                    let mut blocks = cached.clone();
+                    [(BLEND, 1), (SETTINGS, 4), (HEADPHONES, 5)]
+                        .into_iter()
+                        .filter(|(bit, _)| wanted & bit != 0)
+                        .try_for_each(|(_, block)| device.read_one(block, &mut blocks))
+                        .map(|()| blocks)
+                }
+                _ => device.read(),
+            };
+            Some(match fresh {
                 Ok(blocks) if self.decoded.as_ref() == Some(&blocks) => Ok(None),
                 Ok(blocks) => device::decode(&blocks).map(|state| Some((state, Some(blocks)))),
                 Err(error) => Err(error),
@@ -208,7 +333,13 @@ impl<P: Platform, C: Fn() -> u64> Worker<P, C> {
             None => self.keep(force, false),
         }
         self.next_poll = if self.device.is_some() {
-            self.now() + self.interval
+            if !partial {
+                self.full_due = now + self.poll_interval();
+            }
+            if !partial || dial {
+                self.dial_due = now + self.interval;
+            }
+            self.device_due()
         } else if self.state["connected"] == true && self.state["stale"] == false {
             self.now() + if self.interval == 50 { 500 } else { 2000 }
         } else {
@@ -278,21 +409,28 @@ impl<P: Platform, C: Fn() -> u64> Worker<P, C> {
                         self.state["eqUnavailable"].as_str().unwrap_or(""),
                     ));
                 }
+                let target = device::block_of(key, value)?;
+                let cached = self.decoded.clone();
                 let outcome = if let Some(device) = self.device.as_mut() {
+                    // Read-modify-write only the target block, freshly read;
+                    // the other blocks come from the last sample when cached.
                     (|| {
-                        let mut before = device.read()?;
-                        device::decode(&before)?;
+                        let mut before = match cached {
+                            Some(mut blocks) => {
+                                device.read_one(target, &mut blocks)?;
+                                blocks
+                            }
+                            None => device.read()?,
+                        };
+                        // modify() validates the fresh blocks before any write.
                         let (block, bytes) = device::modify(&before, key, value)?;
                         device.write(block, &bytes)?;
-                        let state = device::decode(&device.read()?)?;
-                        match block {
-                            1 => before.blend.copy_from_slice(&bytes),
-                            4 => before.settings.copy_from_slice(&bytes),
-                            5 => before.headphones.copy_from_slice(&bytes),
-                            _ => return Err("Unknown block".into()),
-                        }
+                        let mut after = before.clone();
+                        device.read_one(block, &mut after)?;
+                        let state = device::decode(&after)?;
+                        device::set_block(&mut before, block, &bytes)?;
                         let confirmed = state[key] == device::decode(&before)?[key];
-                        Ok((state, confirmed))
+                        Ok((state, confirmed, Some(after)))
                     })()
                 } else {
                     self.platform.alsa(Some((key, value))).map(|state| {
@@ -302,14 +440,15 @@ impl<P: Platform, C: Fn() -> u64> Worker<P, C> {
                             _ => json!((value * 4.0).round_ties_even() / 4.0),
                         };
                         let confirmed = state[key] == expected;
-                        (state, confirmed)
+                        (state, confirmed, None)
                     })
                 };
                 match outcome {
-                    Ok((mut state, confirmed)) => {
+                    Ok((mut state, confirmed, blocks)) => {
                         state["stale"] = false.into();
                         state["present"] = true.into();
-                        self.publish(state, true, true);
+                        self.publish(state, false, true);
+                        self.decoded = blocks;
                         if !confirmed {
                             return Err("Device did not confirm the requested setting".into());
                         }
@@ -324,10 +463,11 @@ impl<P: Platform, C: Fn() -> u64> Worker<P, C> {
         }
         Ok(())
     }
+    /// The result carries no state: every state change was already published
+    /// as a frame before it, in order.
     pub fn command(&mut self, message: Value) {
         let result = self.execute(&message);
-        let mut event =
-            json!({"type":"result","id":message.get("id"),"ok":result.is_ok(),"state":self.state});
+        let mut event = json!({"type":"result","id":message.get("id"),"ok":result.is_ok()});
         if let Err(error) = result {
             event["error"] = error.into();
         }
