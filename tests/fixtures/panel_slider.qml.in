@@ -3,9 +3,10 @@ import QtQuick
 import QtTest
 import qs.Ui
 import qs.Commons
+import qs.Commons as Commons
 FloatingWindow {
  id: root; visible:true; implicitWidth: 500; implicitHeight: 200
- property color fg: Color.foreground
+ property color fg: Commons.Color.foreground
  property string family: Style.font.family
  property var bar: null
  property var state: ({headphones:-20})
